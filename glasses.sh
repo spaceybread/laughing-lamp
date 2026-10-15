@@ -58,4 +58,11 @@ if [[ -n "${BROWSER:-}" ]]; then
 else
   adb shell am start -a android.intent.action.VIEW -d "$URL"
 fi
-echo "Opened $URL on the glasses. If a camera permission prompt appears, tap Allow on the touchpad."
+# the stock browser asks for the camera on every load: accept it for our own page
+for i in 1 2 3 4 5 6; do
+  sleep 1
+  if adb exec-out uiautomator dump /dev/tty 2>/dev/null | grep -q 'text="Allow"'; then
+    adb shell input tap 960 673; echo "Accepted the camera prompt."; break
+  fi
+done
+echo "Opened $URL on the glasses."
