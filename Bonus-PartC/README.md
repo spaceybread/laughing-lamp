@@ -95,3 +95,10 @@ finally used. The glasses report, per picture, when it was taken, sent, answered
 | `client_event` | both | camera_started/ended/error, peer_state, webrtc_fallback, mode, paused/resumed, ws_reconnected |
 | `probe` | both | bytes, down_ms, down_mbps, up_ms, up_mbps |
 | `relay` | relay | every 5 s: glasses RTT/buffer, per-viewer buffer, frames sent/dropped, process memory |
+
+## Ground-truth games
+
+`pgn/` holds the chess.com games played during the runs (exported from the game pages). Copy the
+right one into `traces/<run>/game.pgn` and `analyze.py` scores every frame's raw and tracked reading
+against the real positions (`pgn_raw_correct`, `pgn_tracked_correct`, figure `part_d.png`).
+`game2_2347152640.pgn` was played during run `20261015-205506_parta-wifi-webrtc`.
