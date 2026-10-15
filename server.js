@@ -14,9 +14,69 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT) || 3000;
+const VISION = process.env.VISION_URL || 'http://127.0.0.1:3001';
+let broadcaster = null;        // the single camera source (the glasses)
+const send = (ws, obj) => { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); };
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/broadcast', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'broadcast.html')));
+
+// ---- chess analysis -------------------------------------------------------
+// GET /analyze?side=auto|white|black&think=1  -> asks the glasses for a full-res snapshot,
+// hands it to the Python vision service, returns its JSON.
+// POST /analyze (image body)                   -> same, but with a supplied image (testing).
+const pendingSnaps = new Map();   // id -> resolve(buffer)
+let snapId = 0;
+
+function requestSnapshot(timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    if (!broadcaster || broadcaster.readyState !== broadcaster.OPEN) return reject(new Error('glasses not connected'));
+    const id = String(++snapId);
+    const t = setTimeout(() => { pendingSnaps.delete(id); reject(new Error('snapshot timed out')); }, timeoutMs);
+    pendingSnaps.set(id, (buf) => { clearTimeout(t); resolve(buf); });
+    send(broadcaster, { type: 'snapshot', id });
+  });
+}
+
+app.post('/snapshot/:id', express.raw({ type: '*/*', limit: '12mb' }), (req, res) => {
+  const resolve = pendingSnaps.get(req.params.id);
+  if (resolve) { pendingSnaps.delete(req.params.id); resolve(req.body); }
+  res.sendStatus(204);
+});
+
+async function analyzeImage(buf, query, res) {
+  const qs = new URLSearchParams({ side: query.side || 'auto', think: query.think || '1.0' });
+  try {
+    const r = await fetch(`${VISION}/analyze?${qs}`, { method: 'POST', body: buf, headers: { 'content-type': 'image/jpeg' } });
+    const text = await r.text();
+    res.status(r.status).type('json').send(text);
+    // share the outcome with everyone connected (glasses draw the dots, laptop viewer shows the panel)
+    try {
+      const d = JSON.parse(text);
+      const lite = { ...d }; delete lite.annotated;              // keep the websocket message small
+      const msg = { type: 'result', result: lite, annotated: d.annotated || null };
+      for (const v of viewers.values()) send(v, msg);
+      send(broadcaster, { type: 'result', result: lite });
+    } catch {}
+  } catch (e) {
+    res.status(502).json({ ok: false, error: `vision service unreachable (${e.message}); start it with: .venv/bin/python vision/service.py` });
+  }
+}
+
+app.get('/analyze', async (req, res) => {
+  let buf;
+  try { buf = await requestSnapshot(); } catch (e) { return res.status(503).json({ ok: false, error: e.message }); }
+  lastSnapshot = buf;
+  analyzeImage(buf, req.query, res);
+});
+app.post('/analyze', express.raw({ type: '*/*', limit: '12mb' }), (req, res) => analyzeImage(req.body, req.query, res));
+
+// GET /snapshot.jpg -> the most recent full-res frame fetched from the glasses (handy for collecting samples)
+let lastSnapshot = null;
+app.get('/snapshot.jpg', async (req, res) => {
+  try { lastSnapshot = await requestSnapshot(); } catch (e) { if (!lastSnapshot) return res.status(503).send(e.message); }
+  res.type('jpeg').send(lastSnapshot);
+});
 
 // HTTPS if certs/ exists (needed for camera access over Wi-Fi), else plain HTTP
 // (fine when the glasses reach the server as http://localhost via `adb reverse`).
@@ -29,11 +89,9 @@ const server = useTls
 
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-let broadcaster = null;        // the single camera source (the glasses)
 const viewers = new Map();     // id -> ws
 let nextId = 1;
 
-const send = (ws, obj) => { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); };
 const frameViewerCount = () => [...viewers.values()].filter((v) => v.wantsFrames).length;
 const notifyCounts = () => {
   send(broadcaster, { type: 'viewers', count: viewers.size });

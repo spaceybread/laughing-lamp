@@ -1,2 +1,6 @@
 node_modules/
 certs/
+.venv/
+vision/templates/*.png
+vision/debug/
+__pycache__/

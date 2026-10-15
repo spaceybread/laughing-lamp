@@ -1,6 +1,12 @@
-# Glasses Camera Stream (INMO Air2)
+# Glasses Camera Stream + Chess Assistant (INMO Air2)
 
-A small website that shows the live camera feed from a pair of INMO Air2 glasses.
+A small website that shows the live camera feed from a pair of INMO Air2 glasses,
+plus a chess assistant: the glasses photograph a chess.com board on a phone, the
+Mac recognises the position and asks Stockfish for the best move, and the glasses
+display a green dot on the piece to move and a red dot on its destination.
+
+Using engine help in rated games against people breaks chess.com's fair-play
+rules; this is for bots, puzzles and analysis.
 
 How it works: the Air2 is a standalone Android 11 device, so a browser on the
 glasses opens the **broadcast** page, which grabs the camera with `getUserMedia`
@@ -147,3 +153,60 @@ open http://localhost:3000/
 
 To stop: close the browser tab on the glasses (back/home on the touchpad) or
 just unplug; nothing is installed or changed on the device.
+
+## Chess assistant
+
+```
+glasses (/broadcast)  --picture every 3 s-->  Node :3000  -->  Python vision :3001 (OpenCV + Stockfish)
+        ^-------------- best move + dot positions ----------------------'
+```
+
+### Run (three terminals, plus the glasses step above)
+
+```bash
+npm start                                   # 1: relay + static site
+.venv/bin/python vision/service.py          # 2: vision + engine service (first run: python3 -m venv .venv && .venv/bin/pip install -r vision/requirements.txt; brew install stockfish)
+GLASSES_IP=<ip> ./glasses.sh                # 3: opens http://localhost:3000/broadcast on the glasses
+```
+
+Look at the phone with the board filling a good part of the view. Within a few
+seconds the glasses show e.g. `e4  e2 → e4 · +0.31` with the dots. The laptop
+viewer at http://localhost:3000 shows the same result, the recognised board
+(labels; red label = low confidence) and the FEN, and has its own Analyze button.
+
+### How it works
+
+- `vision/board.py` finds the phone screen (bright region), warps it flat, and
+  searches it exhaustively for an 8×8 grid: nine evenly spaced vertical and
+  horizontal edge lines (integral-image comb search). It then refines the four
+  corners by locating the real grid lines in the warped board, and checks that
+  the squares alternate like a chess board.
+- `vision/classify.py` recognises each square by nearest-neighbour matching
+  against templates cut from frames of the **start position** (so they match
+  this phone, theme and camera). Features are background-subtracted so a piece
+  looks the same on light and dark squares. `POST /calibrate` with a start-position
+  frame adds templates for a new phone/theme.
+- `vision/engine.py` builds the FEN (side at the bottom of the screen = you,
+  castling rights inferred from kings/rooks on home squares, your side to move)
+  and runs Stockfish for 1 s with three principal variations.
+- The Node server forwards pictures to the service and pushes every result to
+  all connected pages over the WebSocket.
+
+### Broadcast page parameters (assistant)
+
+| Param | Default | Meaning |
+|---|---|---|
+| `assist` | `1` | `0` turns the picture loop off |
+| `every` | `3000` | ms between pictures |
+| `side` | `auto` | `white` / `black` if the auto guess (more of your pieces in the bottom half) is wrong |
+| `stream` | `1` | `0` stops the live video to the laptop; only pictures and results travel |
+
+### Known limits
+
+- It always assumes it is your move; while the opponent thinks, the suggestion is
+  simply what you would play if it were your turn.
+- Templates were cut from the brown board theme and the default pieces at this
+  phone size. A different theme or piece set needs `POST /calibrate` with a
+  start-position frame (see `vision/service.py`).
+- Phone lock screen, no board in view, or the board too small (< ~250 px wide in
+  the 1280×720 frame) gives "board not found".

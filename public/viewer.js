@@ -47,6 +47,7 @@
           else { teardown(); showPlaceholder(); setStatus('Glasses offline – waiting…', 'warn'); }
           break;
         case 'offer': if (mode === 'webrtc') await onOffer(msg.sdp); break;
+        case 'result': if (msg.annotated) msg.result.annotated = msg.annotated; showResult(msg.result); break;
         case 'ice': if (pc && msg.candidate) pc.addIceCandidate(msg.candidate).catch(() => {}); break;
       }
     };
@@ -129,6 +130,70 @@
     a.click();
   };
   $('full').onclick = () => { const s = $('stage'); document.fullscreenElement ? document.exitFullscreen() : s.requestFullscreen(); };
+
+  // ---- chess assistant ----------------------------------------------------
+  const overlay = $('overlay'), bestEl = $('best'), altsEl = $('alts'), annotEl = $('annot'), fenEl = $('fen'), msgEl = $('msg');
+  let analyzing = false, lastResult = null, overlayUntil = 0;
+
+  async function analyze() {
+    if (analyzing) return;
+    analyzing = true;
+    $('analyze').disabled = true;
+    msgEl.textContent = 'Capturing & analysing…';
+    try {
+      const r = await fetch(`/analyze?side=${$('side').value}&think=1.0`);
+      showResult(await r.json());
+    } catch (e) {
+      msgEl.textContent = 'Analysis request failed: ' + e.message;
+    } finally {
+      analyzing = false; $('analyze').disabled = false;
+    }
+  }
+  function showResult(d) {
+    if (!d.ok) { msgEl.textContent = d.error || 'analysis failed'; lastResult = null; drawOverlay(); return; }
+    lastResult = d; overlayUntil = performance.now() + 15000;
+    if (d.annotated) { annotEl.src = d.annotated; annotEl.classList.add('show'); }
+    fenEl.textContent = d.fen;
+    if (d.problems && d.problems.length) {
+      msgEl.textContent = 'Position looks wrong: ' + d.problems.join(', ') + ' (red labels = low confidence)';
+      bestEl.textContent = '—'; altsEl.textContent = '';
+    } else if (d.moves && d.moves.length) {
+      const m = d.moves[0];
+      msgEl.textContent = `You are ${d.side}. Board ${d.board_score >= 0.6 ? 'clear' : 'marginal'}.`;
+      bestEl.innerHTML = `${m.san}<small>${m.from} → ${m.to} · ${m.eval}</small>`;
+      altsEl.innerHTML = d.moves.slice(1).map((x) => `${x.san} (${x.eval})`).join(' · ') + `<br>${m.pv}`;
+    }
+    drawOverlay();
+  }
+  $('analyze').onclick = analyze;
+  let autoTimer = null;
+  $('auto').onchange = () => { clearInterval(autoTimer); autoTimer = null; if ($('auto').checked) { analyze(); autoTimer = setInterval(analyze, 4000); } };
+
+  // Draw the best-move arrow over the live picture. The video is object-fit: contain inside #stage,
+  // so map frame pixels -> displayed pixels.
+  function drawOverlay() {
+    const st = $('stage');
+    overlay.width = st.clientWidth; overlay.height = st.clientHeight;
+    const ctx = overlay.getContext('2d');
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    if (!lastResult || !lastResult.arrow || performance.now() > overlayUntil) return;
+    const fw = lastResult.frame.w, fh = lastResult.frame.h;
+    const scale = Math.min(overlay.width / fw, overlay.height / fh);
+    const ox = (overlay.width - fw * scale) / 2, oy = (overlay.height - fh * scale) / 2;
+    const P = (p) => [ox + p[0] * scale, oy + p[1] * scale];
+    // board outline
+    ctx.beginPath(); lastResult.quad.forEach((q, i) => { const [x, y] = P(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath();
+    ctx.strokeStyle = 'rgba(79,140,255,.8)'; ctx.lineWidth = 2; ctx.stroke();
+    // green dot = piece to move, red dot = destination
+    const rad = Math.max(5, (lastResult.square_px || 40) * scale * 0.3);
+    for (const [pt, col] of [[lastResult.arrow.from, '#2ecc40'], [lastResult.arrow.to, '#ff3b30']]) {
+      const [x, y] = P(pt);
+      ctx.beginPath(); ctx.arc(x, y, rad + 3, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+    }
+  }
+  window.addEventListener('resize', drawOverlay);
+  setInterval(drawOverlay, 1000);
 
   connectWS();
 })();

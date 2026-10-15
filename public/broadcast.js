@@ -12,6 +12,10 @@
   const QUALITY = Number(qs.get('q')) || 0.6;      // frames mode JPEG quality
   const FRAME_W = Number(qs.get('fw')) || 640;     // frames mode width
   const FAKE = qs.get('fake') === '1';             // test pattern instead of a real camera
+  const ASSIST = qs.get('assist') !== '0';         // take a picture every few seconds and show the best move
+  const ASSIST_MS = Number(qs.get('every')) || 3000;
+  const SIDE = qs.get('side') || 'auto';           // auto | white | black (colour at the bottom of the phone screen)
+  const STREAM = qs.get('stream') !== '0';         // stream=0: no live video to the laptop, only pictures + results
 
   const video = document.getElementById('preview');
   const statusEl = document.getElementById('status');
@@ -45,11 +49,13 @@
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       switch (msg.type) {
         case 'viewers': viewersEl.textContent = `${msg.count} viewer${msg.count === 1 ? '' : 's'}`; break;
-        case 'frames': frameViewers = msg.count; if (frameViewers > 0) startFrames(); else stopFrames(); break;
-        case 'want-stream': if (stream) await makeOffer(msg.from); break;
+        case 'frames': frameViewers = STREAM ? msg.count : 0; if (frameViewers > 0) startFrames(); else stopFrames(); break;
+        case 'want-stream': if (stream && STREAM) await makeOffer(msg.from); break;
+        case 'result': showResult(msg.result); break;
         case 'answer': { const pc = peers.get(msg.from); if (pc) await pc.setRemoteDescription(msg.sdp).catch(console.error); break; }
         case 'ice': { const pc = peers.get(msg.from); if (pc && msg.candidate) pc.addIceCandidate(msg.candidate).catch(() => {}); break; }
         case 'viewer-left': { const pc = peers.get(msg.from); if (pc) { pc.close(); peers.delete(msg.from); } break; }
+        case 'snapshot': sendSnapshot(msg.id); break;
       }
     };
   }
@@ -87,6 +93,87 @@
     }, 1000 / FPS);
   }
   function stopFrames() { clearInterval(frameTimer); frameTimer = null; }
+
+  // ---- full-resolution snapshot on request (for chess analysis) -----------
+  const snapCanvas = document.createElement('canvas');
+  function sendSnapshot(id) {
+    if (!stream || !video.videoWidth) return;
+    snapCanvas.width = video.videoWidth; snapCanvas.height = video.videoHeight;
+    snapCanvas.getContext('2d').drawImage(video, 0, 0);
+    snapCanvas.toBlob((blob) => {
+      if (!blob) return;
+      fetch('/snapshot/' + id, { method: 'POST', body: blob, headers: { 'content-type': 'image/jpeg' } }).catch(() => {});
+    }, 'image/jpeg', 0.92);
+  }
+
+  // ---- chess assist: picture -> Mac analyses -> dots on this display -------
+  const dots = document.getElementById('dots');
+  const moveEl = document.getElementById('move');
+  const hintEl = document.getElementById('hint');
+  let lastResult = null, resultAt = 0, assisting = false;
+
+  function takePicture() {
+    return new Promise((resolve) => {
+      if (!stream || !video.videoWidth) return resolve(null);
+      snapCanvas.width = video.videoWidth; snapCanvas.height = video.videoHeight;
+      snapCanvas.getContext('2d').drawImage(video, 0, 0);
+      snapCanvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.92);
+    });
+  }
+
+  async function assistOnce() {
+    if (assisting) return;
+    assisting = true;
+    try {
+      const blob = await takePicture();
+      if (!blob) return;
+      const r = await fetch('/analyze?side=' + SIDE + '&think=1.0', { method: 'POST', body: blob, headers: { 'content-type': 'image/jpeg' } });
+      const d = await r.json();
+      showResult(d);
+    } catch (e) {
+      hintEl.textContent = 'analysis failed: ' + e.message;
+    } finally {
+      assisting = false;
+    }
+  }
+
+  function showResult(d) {
+    if (!d || !d.ok) {
+      hintEl.textContent = d && d.error ? d.error : 'no result';
+      if (performance.now() - resultAt > 10000) { lastResult = null; moveEl.textContent = ''; drawDots(); }
+      return;
+    }
+    lastResult = d; resultAt = performance.now();
+    if (d.problems && d.problems.length) {
+      hintEl.textContent = 'position unclear: ' + d.problems.join(', ');
+      moveEl.textContent = '';
+    } else if (d.moves && d.moves.length) {
+      const m = d.moves[0];
+      hintEl.textContent = '';
+      moveEl.innerHTML = m.san + '<small>' + m.from + ' \u2192 ' + m.to + ' \u00b7 ' + m.eval + '</small>';
+    }
+    drawDots();
+  }
+
+  // frame pixels -> displayed pixels (video is object-fit: contain inside #view)
+  function drawDots() {
+    const view = document.getElementById('view');
+    dots.width = view.clientWidth; dots.height = view.clientHeight;
+    const ctx = dots.getContext('2d');
+    ctx.clearRect(0, 0, dots.width, dots.height);
+    if (!lastResult || !lastResult.arrow || !video.videoWidth) return;
+    const fw = lastResult.frame.w, fh = lastResult.frame.h;
+    const scale = Math.min(dots.width / fw, dots.height / fh);
+    const ox = (dots.width - fw * scale) / 2, oy = (dots.height - fh * scale) / 2;
+    const rad = Math.max(6, (lastResult.square_px || 40) * scale * 0.3);
+    const P = (p) => [ox + p[0] * scale, oy + p[1] * scale];
+    for (const [pt, col] of [[lastResult.arrow.from, '#2ecc40'], [lastResult.arrow.to, '#ff3b30']]) {
+      const [x, y] = P(pt);
+      ctx.beginPath(); ctx.arc(x, y, rad + 3, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+    }
+  }
+  window.addEventListener('resize', drawDots);
 
   // ---- camera -------------------------------------------------------------
   // Synthetic moving test pattern (?fake=1) for checking the pipeline without a camera.
@@ -138,6 +225,11 @@
     track.onended = () => { setStatus('Camera track ended', true); stream = null; startBtn.disabled = false; startBtn.textContent = 'Start camera'; };
     send({ type: 'ready' });
     if (frameViewers > 0) startFrames();
+    if (ASSIST) {
+      hintEl.textContent = 'assist on';
+      document.getElementById('bar').style.display = 'none';     // give the whole display to the picture
+      setTimeout(assistOnce, 1500); setInterval(assistOnce, ASSIST_MS);
+    }
     // Keep the glasses' screen on; Chrome pauses capture when the display sleeps.
     if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {});
   }
