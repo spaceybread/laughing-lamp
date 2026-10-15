@@ -139,6 +139,8 @@ def summarize(run_dir, pgn=None):
     stages = collections.defaultdict(list)
     for e in an:
         for k, v in (e.get("timing") or {}).items():
+            if k == "engine" and e.get("cached"):
+                continue                                   # cache hit: no engine work
             stages[k].append(v)
     raw_ok = [e for e in readable if e.get("raw") and not e["raw"].get("problems")]
     raw_exact = [e for e in readable if e.get("raw") and e["raw"].get("agree") == 64]
@@ -149,6 +151,7 @@ def summarize(run_dir, pgn=None):
              engine_cached_rate=mean([1.0 if e.get("cached") else 0.0 for e in hints]) if hints else math.nan,
              analyze_total_med=med(tot), analyze_total_p95=pct(tot, 95),
              detect_ms=med(stages["detect"]), classify_ms=med(stages["classify"]), match_ms=med(stages["match"]), engine_ms=med(stages["engine"]),
+             engine_runs=len(stages["engine"]),
              raw_valid_rate=len(raw_ok) / len(readable) if readable else math.nan,
              raw_exact_rate=len(raw_exact) / len(readable) if readable else math.nan,
              raw_wrong_squares_mean=mean([64 - a for a in raw_agree]), states=" ".join(f"{k}:{v}" for k, v in sorted(states.items())))
@@ -169,6 +172,10 @@ def summarize(run_dir, pgn=None):
     cap2resp = [a["t_resp"] - a["cap"] for a in assist if a.get("t_resp")]
     enc = [a["t_send"] - a["cap"] for a in assist if a.get("t_send")]
     ages = [s["last_ok_age_ms"] / 1000 for s in gs if s.get("last_ok_age_ms") is not None]
+    vision_by_req = {e["req"]: (e.get("timing") or {}).get("total") for e in an}
+    stages["encode"] = enc
+    stages["transfer"] = [(a["t_resp"] - a["t_send"]) - vision_by_req[a["req"]] for a in assist
+                          if a.get("t_resp") and a.get("t_send") and vision_by_req.get(a.get("req")) is not None]
     rtc_out = collections.defaultdict(list)
     for s in gs:
         for p in s.get("peers") or []:
@@ -178,7 +185,7 @@ def summarize(run_dir, pgn=None):
     rtc_lost_up = sum(delta_max_min([p.get("lost") for p in lst]) for lst in rtc_out.values())
     rtc_pkts_up = sum(delta_max_min([p.get("packetsSent") for p in lst]) for lst in rtc_out.values())
     limits = collections.Counter(p.get("limit") for lst in rtc_out.values() for p in lst if p.get("limit"))
-    r.update(cap2hint_med=med(cap2hint), cap2hint_p95=pct(cap2hint, 95), cap2resp_med=med(cap2resp), encode_ms=med(enc),
+    r.update(cap2hint_med=med(cap2hint), cap2hint_p95=pct(cap2hint, 95), cap2resp_med=med(cap2resp), encode_ms=med(enc), transfer_ms=med(stages["transfer"]),
              last_ok_age_med=med(ages), last_ok_age_p95=pct(ages, 95), last_ok_age_max=max(ages) if ages else math.nan,
              glasses_reconnects=max([s.get("reconnects", 0) for s in gs] or [0]),
              rtc_rtt_med=med(rtc_rtt), rtc_rtt_p95=pct(rtc_rtt, 95),
@@ -255,7 +262,7 @@ COLUMNS = ["run", "scenario", "net", "duration_s", "uplink_mbps", "downlink_mbps
            "failures", "glasses_disconnects", "glasses_reconnects", "camera_ended", "webrtc_failed", "webrtc_fallbacks", "analyze_fail",
            "analyses", "analyses_per_min", "detect_rate", "readable_rate", "hint_rate", "tracker_lost", "engine_cached_rate",
            "cap2hint_med", "cap2hint_p95", "cap2resp_med", "encode_ms", "analyze_total_med", "analyze_total_p95",
-           "detect_ms", "classify_ms", "match_ms", "engine_ms", "last_ok_age_med", "last_ok_age_p95", "last_ok_age_max",
+           "encode_ms", "transfer_ms", "detect_ms", "classify_ms", "match_ms", "engine_ms", "engine_runs", "last_ok_age_med", "last_ok_age_p95", "last_ok_age_max",
            "raw_valid_rate", "raw_exact_rate", "raw_wrong_squares_mean", "pgn_raw_correct", "pgn_tracked_correct", "battery_drop", "states"]
 
 
@@ -279,7 +286,7 @@ def write_tables(rows, out_dir):
     sums = {"duration_s", "stalls", "failures", "analyses", "tracker_lost", "glasses_disconnects", "rtc_freezes"}
     cols = ["scenario", "runs", "duration_s", "uplink_mbps", "downlink_mbps", "ws_rtt_med", "ws_rtt_p95", "rtc_rtt_med", "lat_glasses_relay_med",
             "lat_glasses_laptop_med", "fps_viewer", "stalls", "stall_pct", "jitter_viewer_ms", "rtc_jitter_ms", "rtc_loss_down", "failures",
-            "analyses", "detect_rate", "readable_rate", "hint_rate", "cap2hint_med", "last_ok_age_med", "tracker_lost", "raw_exact_rate", "pgn_raw_correct", "pgn_tracked_correct"]
+            "analyses", "detect_rate", "readable_rate", "hint_rate", "cap2hint_med", "encode_ms", "last_ok_age_med", "tracker_lost", "raw_exact_rate", "pgn_raw_correct", "pgn_tracked_correct"]
     lines = ["# Part C summary", "", f"{len(rows)} runs, {sum(r['duration_s'] for r in rows) / 60:.1f} min in total.", "",
              "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for sc, rs in sorted(groups.items()):
@@ -352,13 +359,13 @@ def write_figures(rows, series, out_dir):
     save(fig, "streaming.png")
     # 4. assist pipeline breakdown
     fig, ax = plt.subplots(figsize=(8, 3.8))
-    stages = ["decode", "detect", "classify", "match", "engine"]
+    stages = ["encode", "transfer", "decode", "detect", "classify", "match", "engine"]
     width = 0.8 / max(1, len(scen))
     for i, sc in enumerate(scen):
         vals = [med(pooled[sc]["stage_" + k]) if pooled[sc]["stage_" + k] else 0 for k in stages]
         ax.bar(np.arange(len(stages)) + i * width, vals, width, label=sc)
     ax.set_xticks(np.arange(len(stages)) + width * (len(scen) - 1) / 2); ax.set_xticklabels(stages)
-    ax.set_ylabel("median ms"); ax.set_title("vision + engine stages per picture", fontsize=10); ax.legend(fontsize=8); ax.grid(alpha=.3, axis="y")
+    ax.set_ylabel("median ms"); ax.set_title("capture→hint stages per picture (encode on the glasses, transfer = upload + relay + download, engine = uncached only)", fontsize=9); ax.legend(fontsize=8); ax.grid(alpha=.3, axis="y")
     save(fig, "pipeline.png")
     # 5. app KPIs and Part D raw-vs-tracked
     fig, axes = plt.subplots(1, 2, figsize=(13, 3.8))
