@@ -97,7 +97,7 @@ def wait_for(predicate, seconds, every=1.0):
     while time.time() < end:
         root = ui_dump()
         got = predicate(root)
-        if got:
+        if got is not None:
             return got, root
         time.sleep(every)
     return None, None
@@ -112,26 +112,72 @@ def current_connection():
     return ssid, (m.group(2) if m else None), (ip.group(1) if ip else None)
 
 
+def find_password_field(tries=4):
+    """The password box can be hidden under the keyboard or below the fold of the dialog."""
+    for _ in range(tries):
+        root = ui_dump()                     # (no ESC/back here: on this dialog it closes the dialog)
+        pw = [n for n in nodes(root, **{"class": "android.widget.EditText"}) if n.get("password") == "true"]
+        if pw:
+            return pw[0]
+        edits = nodes(root, **{"class": "android.widget.EditText"})
+        if len(edits) > 1:
+            return edits[1]
+        if len(edits) == 1 and not nodes(root, text="Network name"):
+            return edits[0]                  # join dialog: its only text box is the password
+        # scroll inside the dialog: swipe up over its lower half
+        dlg = [n for n in root.iter("node") if n.get("scrollable") == "true"]
+        x1, y1, x2, y2 = map(int, re.findall(r"\d+", (dlg[0] if dlg else root.find("node")).get("bounds")))
+        x = (x1 + x2) // 2
+        shell(f"input swipe {x} {int(y1 + (y2 - y1) * 0.85)} {x} {int(y1 + (y2 - y1) * 0.35)} 500", check=False)
+        time.sleep(0.8)
+    return None
+
+
 def join(ssid, password, timeout=40):
     shell("svc wifi enable", check=False)
+    shell("input keyevent HOME", check=False); time.sleep(0.5)             # start from a clean screen
     shell("am start -a android.settings.WIFI_SETTINGS >/dev/null", check=False)
     time.sleep(2)
 
-    # 1) the network in the scan list?
-    def find_ssid(root):
-        exact = [n for n in nodes(root, text=ssid) if n.get("text", "").lower() == ssid.lower()]
-        return exact[0] if exact else None
-    node, root = wait_for(find_ssid, 12)
-    if node is None:
-        # scroll the list once and look again
-        shell("input swipe 640 650 640 250 300", check=False); time.sleep(1.5)
-        node, root = wait_for(find_ssid, 6)
+    # 1) the network in the scan list? (only visible rows are in a dump: scroll through the list)
+    def visible_texts(root):
+        return [n.get("text") for n in root.iter("node") if n.get("text")]
 
+    def scroll_down(root):
+        sc = [n for n in root.iter("node") if n.get("scrollable") == "true"]
+        if sc:
+            x1, y1, x2, y2 = map(int, re.findall(r"\d+", sc[0].get("bounds")))
+        else:
+            x1, y1, x2, y2 = 0, 200, 1280, 760
+        x = (x1 + x2) // 2
+        shell(f"input swipe {x} {int(y1 + (y2 - y1) * 0.8)} {x} {int(y1 + (y2 - y1) * 0.25)} 600", check=False)
+        time.sleep(1.2)
+
+    def find_text(label, exact=True, max_scrolls=8, settle=10):
+        """Scroll through the settings list until a row with this text is visible; returns the node or None."""
+        deadline = time.time() + settle
+        seen_same = 0
+        for _ in range(max_scrolls + 20):
+            root = ui_dump()
+            hits = [n for n in nodes(root, text=label) if (n.get("text", "").lower() == label.lower()) or not exact]
+            if hits:
+                return hits[0]
+            before = visible_texts(root)
+            scroll_down(root)
+            after = visible_texts(ui_dump())
+            if after == before:                       # end of list (or list not ready yet while scanning)
+                seen_same += 1
+                if time.time() > deadline and seen_same >= 2:
+                    return None
+                time.sleep(1.0)
+        return None
+
+    node = find_text(ssid)
     if node is not None:
         print(f"found '{ssid}' in the list, opening it")
         tap(node)
     else:
-        add = (nodes(ui_dump(), text="Add network") or [None])[0]
+        add = find_text("Add network")
         if add is None:
             raise RuntimeError(f"'{ssid}' is not in the scan list and there is no 'Add network' entry")
         print(f"'{ssid}' not in the list; using Add network")
@@ -149,22 +195,28 @@ def join(ssid, password, timeout=40):
                 raise RuntimeError("Add network: could not pick WPA/WPA2 security")
             tap(opt)
 
-    # 2) password field (absent if the network is already saved) and CONNECT
+    # 2) password field (absent if the network is already saved), then CONNECT / SAVE
     root = ui_dump()
-    pw = [n for n in nodes(root, **{"class": "android.widget.EditText"}) if n.get("password") == "true"]
-    if not pw:   # Add-network dialog: the password box is the second EditText
-        edits = nodes(root, **{"class": "android.widget.EditText"})
-        pw = edits[1:2] if len(edits) > 1 else []
-    if pw:
-        print("typing the password")
-        tap(pw[0]); type_text(password)
-        shell("input keyevent 111", check=False)       # ESC: hide the keyboard so the buttons are reachable
-        time.sleep(0.5)
-    elif nodes(root, text="FORGET"):
+    saved_dialog = bool(nodes(root, text="FORGET")) and not nodes(root, **{"class": "android.widget.EditText"})
+    if saved_dialog:
         print("network already saved on the glasses; connecting without a password")
-    btn = (nodes(ui_dump(), text="CONNECT") or nodes(ui_dump(), text="SAVE") or [None])[0]
+    else:
+        pw = find_password_field()
+        if pw is None:
+            raise RuntimeError("could not find the password field in the dialog")
+        print("typing the password")
+        tap(pw); type_text(password)
+    btn = None
+    for _ in range(3):
+        root = ui_dump()
+        btn = (nodes(root, text="CONNECT") or nodes(root, text="SAVE") or [None])[0]
+        if btn is not None and btn.get("enabled", "true") == "true":
+            break
+        time.sleep(0.7)
     if btn is None:
-        raise RuntimeError("no CONNECT button found; the dialog looks different than expected")
+        raise RuntimeError("no CONNECT/SAVE button found; the dialog looks different than expected")
+    if btn.get("enabled") == "false":
+        raise RuntimeError("the CONNECT/SAVE button stayed disabled (password too short?)")
     tap(btn)
 
     # 3) wait for an address
