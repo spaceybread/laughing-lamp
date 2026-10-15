@@ -1,0 +1,15 @@
+{
+  "name": "glasses-cam-stream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stream the INMO Air2 camera to a web page (WebRTC with JPEG-frame fallback).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "gen-cert": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 365 -subj /CN=glasses-cam -addext subjectAltName=IP:$(ipconfig getifaddr en0),DNS:localhost"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  }
+}
