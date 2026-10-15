@@ -4,3 +4,5 @@ certs/
 vision/templates/*.png
 vision/debug/
 __pycache__/
+traces/
+Bonus-PartC/results/

@@ -1,6 +1,9 @@
 """HTTP service: POST a camera frame, get back the position and Stockfish's best move.
 
-  POST /analyze?side=auto|white|black&think=1.0      body: JPEG/PNG bytes
+  POST /analyze?side=auto|white|black&think=1.0&track=1   body: JPEG/PNG bytes
+       track=0 -> raw per-picture reading without game tracking (Part D baseline)
+       Every response carries `state`, `timing` (ms per stage) and `raw` (the unmodified
+       reading) so the Part C traces can score the tracker against the raw reader.
   POST /calibrate?white_bottom=1                     body: frame of the START position (adds templates)
   GET  /health
 """
@@ -8,6 +11,7 @@ import base64
 import glob
 import pathlib
 import sys
+import time
 
 import chess
 import cv2
@@ -187,32 +191,74 @@ def calibrate():
     return jsonify(ok=True, templates=len(clf.feats))
 
 
+class Timer:
+    """Stage timings in ms for the trace: t.mark('detect') closes the current stage."""
+    def __init__(self):
+        self.t0 = self.last = time.perf_counter(); self.ms = {}
+    def mark(self, name):
+        now = time.perf_counter(); self.ms[name] = round((now - self.last) * 1000, 1); self.last = now
+    def done(self):
+        self.ms["total"] = round((time.perf_counter() - self.t0) * 1000, 1); return self.ms
+
+
 @app.post("/analyze")
 def analyze():
+    tm = Timer()
     img = decode(request)
     if img is None:
-        return jsonify(ok=False, error="bad image"), 400
+        return jsonify(ok=False, error="bad image", state="badimage", timing=tm.done()), 400
+    tm.mark("decode")
     r = detect_board(img)
+    tm.mark("detect")
     if r is None:
-        return jsonify(ok=False, error="board not found in frame"), 422
+        return jsonify(ok=False, error="board not found in frame", state="nodetect", timing=tm.done()), 422
     if r["score"] < 0.35 or not r["dark_ok"]:
-        return jsonify(ok=False, error=f"board found but grid looks wrong (score {r['score']:.2f})"), 422
+        return jsonify(ok=False, error=f"board found but grid looks wrong (score {r['score']:.2f})", state="badgrid",
+                       board_score=round(r["score"], 2), timing=tm.done()), 422
     grid, conf, scores = clf.classify_board(r["board"], with_scores=True)
+    tm.mark("classify")
     think = float(request.args.get("think", "1.0"))
     side_req = request.args.get("side", "auto")
+    track = request.args.get("track", "1") != "0"
     side = side_req if side_req in ("white", "black") else (state["side"] or guess_side(grid))
-    common = dict(grid=grid, board_score=round(r["score"], 2), min_conf=float(conf.min()), side=side,
+    raw_grid = grid
+    raw = {"fen": grid_to_fen(raw_grid, side), "problems": validate(chess.Board(grid_to_fen(raw_grid, side)))}
+    common = dict(grid=grid, board_score=round(r["score"], 2), min_conf=float(conf.min()), side=side, raw=raw,
                   quad=r["quad"].tolist(), frame={"w": img.shape[1], "h": img.shape[0]})
 
+    def reply(status, **kw):
+        """Attach timings and how far the raw reading is from the position we answered with."""
+        kw["timing"] = tm.done()
+        if kw.get("fen"):
+            try: raw["agree"] = agreement(board_rows(chess.Board(kw["fen"]), side), raw_grid)
+            except ValueError: pass
+        return jsonify(**kw), status
+
+    if not track:
+        # Part D baseline: believe each picture on its own (repair + validate), assume it is the user's turn.
+        repaired = repair(grid, scores)
+        fen = grid_to_fen(repaired, side)
+        problems = validate(chess.Board(fen))
+        tm.mark("match")
+        if problems:
+            return reply(200, ok=False, state="raw_unclear", error="position unclear: " + ", ".join(problems), fen=fen,
+                         annotated=annotate(r["board"], repaired, conf, None, side), **common)
+        cached = fen in state["cache"]
+        if not cached:
+            state["cache"][fen] = best_move(fen, think)
+        tm.mark("engine")
+        moves = state["cache"][fen]
+        return finish(r, img, repaired, conf, side, chess.Board(fen), moves, 64, "raw", cached, reply, common)
+
     # 1) tracked game: pick the legal continuation that best explains the picture
-    tracked = None; agree = 0
+    tracked = None; agree = 0; plies = None; lost = False; st = "tracked"
     if state["board"] is not None and side == state["side"]:
         tracked, agree, plies = match_continuation(state["board"], side, grid)
         if agree >= AGREE_MIN:
             state["board"] = tracked
             state["raw_fen"], state["raw_count"], state["raw_grid"] = None, 0, None
         else:
-            tracked = None
+            tracked = None; lost = True
     # 2) no track (or lost it): adopt the raw reading once it is stable and legal
     if tracked is None:
         # strong prior: every game begins from the start position; snap to it when close
@@ -221,13 +267,16 @@ def analyze():
             if agreement(board_rows(start, cand_side), grid) >= 56:
                 side = cand_side
                 grid = board_rows(start, side)
+                st = "start"
                 break
         else:
             repaired = repair(grid, scores)
             if agreement(repaired, grid) < 61:      # more than 3 squares had to be changed: too unreliable to adopt
-                return jsonify(ok=False, error="position unreadable (too many doubtful squares)", fen=grid_to_fen(repaired, side),
-                               annotated=annotate(r["board"], grid, conf, None, side), **common)
+                tm.mark("match")
+                return reply(200, ok=False, state="unreadable", lost=lost, error="position unreadable (too many doubtful squares)",
+                             fen=grid_to_fen(repaired, side), annotated=annotate(r["board"], grid, conf, None, side), **common)
             grid = repaired
+            st = "adopted"
         fen = grid_to_fen(grid, side)
         problems = validate(chess.Board(fen))
         prev = state.get("raw_grid")
@@ -238,24 +287,34 @@ def analyze():
         state["raw_grid"], state["raw_fen"] = grid, fen
         need = 2 if state["board"] is None else 3
         if problems:
-            return jsonify(ok=False, error="position unclear: " + ", ".join(problems), fen=fen,
-                           annotated=annotate(r["board"], grid, conf, None, side), **common)
+            tm.mark("match")
+            return reply(200, ok=False, state="unclear", lost=lost, error="position unclear: " + ", ".join(problems), fen=fen,
+                         annotated=annotate(r["board"], grid, conf, None, side), **common)
         if state["raw_count"] < need:
-            return jsonify(ok=False, error=f"confirming position ({state['raw_count']}/{need})…", fen=fen,
-                           annotated=annotate(r["board"], grid, conf, None, side), **common)
+            tm.mark("match")
+            return reply(200, ok=False, state="confirming", lost=lost, error=f"confirming position ({state['raw_count']}/{need})…", fen=fen,
+                         annotated=annotate(r["board"], grid, conf, None, side), **common)
         state["board"], state["side"] = chess.Board(fen), side
         tracked = state["board"]; agree = agreement(board_rows(tracked, side), grid)
+    tm.mark("match")
 
     board = tracked
     fen = board.fen()
     if not user_turn(board, side):
-        return jsonify(ok=False, clear=True, error="opponent to move", fen=fen, agree=agree,
-                       annotated=annotate(r["board"], grid, conf, None, side), **common)
+        return reply(200, ok=False, clear=True, state=st, plies=plies, lost=lost, error="opponent to move", fen=fen, agree=agree,
+                     annotated=annotate(r["board"], grid, conf, None, side), **common)
     if board.is_game_over():
-        return jsonify(ok=False, clear=True, error="game over: " + board.result(), fen=fen, agree=agree, **common)
-    if fen not in state["cache"]:
+        return reply(200, ok=False, clear=True, state="over", plies=plies, error="game over: " + board.result(), fen=fen, agree=agree, **common)
+    cached = fen in state["cache"]
+    if not cached:
         state["cache"][fen] = best_move(fen, think)
+    tm.mark("engine")
     moves = state["cache"][fen]
+    return finish(r, img, board_rows(board, side), conf, side, board, moves, agree, st, cached, reply, common, plies=plies, lost=lost)
+
+
+def finish(r, img, shown_grid, conf, side, board, moves, agree, st, cached, reply, common, plies=None, lost=False):
+    """Successful answer: best move, arrow in frame coordinates, annotated board."""
     best = moves[0] if moves else None
     arrow = None
     if best:
@@ -265,8 +324,9 @@ def analyze():
         arrow = {"from": fp[0].tolist(), "to": fp[1].tolist()}
     q = r["quad"]
     square_px = float(np.mean([np.linalg.norm(q[(i + 1) % 4] - q[i]) for i in range(4)]) / 8)
-    return jsonify(ok=True, fen=fen, problems=[], moves=moves, square_px=square_px, arrow=arrow, agree=agree,
-                   annotated=annotate(r["board"], board_rows(board, side), conf, best, side), **common)
+    return reply(200, ok=True, fen=board.fen(), problems=[], moves=moves, square_px=square_px, arrow=arrow, agree=agree,
+                 state=st, plies=plies, lost=lost, cached=cached,
+                 annotated=annotate(r["board"], shown_grid, conf, best, side), **common)
 
 
 @app.post("/reset")

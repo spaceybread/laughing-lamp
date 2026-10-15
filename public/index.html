@@ -32,6 +32,9 @@
   #annot.show { display: block; }
   #fen { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); word-break: break-all; }
   #msg { font-size: 13px; color: var(--warn); min-height: 1.2em; }
+  .muted { font-size: 12px; color: var(--muted); }
+  #runinfo b { color: var(--bad); }
+  input { font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 6px; border: 1px solid #2d3140; background: #1f2229; color: var(--text); }
   @media (max-width: 900px) { main { flex-direction: column; } aside { width: auto; border-left: 0; border-top: 1px solid #23262e; } }
   video, img { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; display: none; }
   video.show, img.show { display: block; }
@@ -82,6 +85,26 @@
     <div id="alts"></div>
     <img id="annot" alt="Recognised board">
     <div id="fen"></div>
+    <h2>Field run (Part C)</h2>
+    <div class="row">
+      <input id="scenario" placeholder="scenario, e.g. home-wifi" style="width:150px">
+      <select id="net">
+        <option value="wifi">Wi-Fi</option>
+        <option value="pal3">PAL3.0</option>
+        <option value="5g">5G hotspot</option>
+        <option value="usb">USB (adb)</option>
+      </select>
+      <button id="runbtn" class="primary">Start run</button>
+    </div>
+    <div id="runinfo" class="muted">no run</div>
+    <div class="row">
+      <input id="marktxt" placeholder="mark label" style="width:150px">
+      <button id="markbtn">Mark</button>
+      <button id="pausebtn">Pause glasses</button>
+      <button id="probebtn">Probe bandwidth</button>
+    </div>
+    <div id="netinfo" class="muted">—</div>
+    <div id="probeinfo" class="muted"></div>
   </aside>
 </main>
 <footer>

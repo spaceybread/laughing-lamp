@@ -218,6 +218,21 @@ viewer at http://localhost:3000 shows the same result, the recognised board
 | `every` | `3000` | ms between pictures |
 | `side` | `auto` | `white` / `black` if the auto guess (more of your pieces in the bottom half) is wrong |
 | `stream` | `1` | `0` stops the live video to the laptop; only pictures and results travel |
+| `track` | `1` | `0` = raw per-picture reading without game tracking (the Part D baseline) |
+| `stats` | `2000` | ms between telemetry reports to the relay (Part C) |
+
+### Runtime control
+
+The laptop viewer (or `Bonus-PartC/run.sh`) can pause and resume the glasses page
+without touching the glasses: `POST /control?action=pause|resume|analyze|probe|reload`.
+Pause stops streaming and the picture loop; resume restarts both.
+
+### Field runs and traces (Part C)
+
+`POST /run/start?scenario=...&net=...` makes the relay write every event, timing and
+analysed picture to `traces/<timestamp>_<scenario>/` until `POST /run/stop`. The viewer's
+**Field run** panel drives this; `Bonus-PartC/analyze.py` turns the traces into the summary
+table and figures. See `Bonus-PartC/README.md` for the procedure and the metric definitions.
 
 ### Game tracking (why it's not just vision)
 
