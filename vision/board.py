@@ -96,7 +96,7 @@ def find_screen(img):
         return None, None
     screen = np.zeros_like(mask)
     cv2.drawContours(screen, [cv2.convexHull(cnt)], -1, 255, -1)
-    return screen, cv2.boxPoints(cv2.minAreaRect(cnt))
+    return screen, cnt
 
 
 def square_colours(img, region_mask, k=6):
@@ -279,13 +279,34 @@ def _comb_search(gx, gy, p_min, p_max):
     return best
 
 
+def _valid_quad(q, min_side=30):
+    q = np.asarray(q, np.float32).reshape(4, 2)
+    if not np.isfinite(q).all():
+        return False
+    sides = [np.linalg.norm(q[(i + 1) % 4] - q[i]) for i in range(4)]
+    if min(sides) < min_side or max(sides) > 6 * min(sides):
+        return False
+    return cv2.isContourConvex(q.astype(np.int32).reshape(-1, 1, 2)) and abs(cv2.contourArea(q)) > min_side ** 2
+
+
 def propose_from_screen(img, width=480):
     """Warp the bright phone-screen region to a frontal rectangle and comb-search it for the board.
-    Returns a quad in image coords, or None."""
-    screen, box = find_screen(img)
+    Two rectifications are tried (bounding rectangle; four fitted edges, better for tilted phones).
+    Returns a list of quads in image coords."""
+    screen, cnt = find_screen(img)
     if screen is None:
-        return None
-    box = _order_quad(box)
+        return []
+    out = []
+    for box in (cv2.boxPoints(cv2.minAreaRect(cnt)), _quad_from_hull_edges(cnt.reshape(-1, 2).astype(np.float32))):
+        if not _valid_quad(box):
+            continue
+        q = _comb_in_quad(img, _order_quad(box), width)
+        if q is not None and _valid_quad(q):
+            out.append(q)
+    return out
+
+
+def _comb_in_quad(img, box, width):
     w = int(max(np.linalg.norm(box[1] - box[0]), np.linalg.norm(box[2] - box[3])))
     h = int(max(np.linalg.norm(box[3] - box[0]), np.linalg.norm(box[2] - box[1])))
     if w < 40 or h < 40:
@@ -300,7 +321,7 @@ def propose_from_screen(img, width=480):
     cap = np.percentile(np.concatenate([gx.ravel(), gy.ravel()]), 98) + 1e-3     # don't let a few strong edges dominate
     gx = np.minimum(gx, cap); gy = np.minimum(gy, cap)
     short = min(Ws, Hs)
-    score, hit = _comb_search(gx, gy, max(8, int(0.35 * short / 8)), int(short / 8))
+    score, hit = _comb_search(gx, gy, max(8, int(0.3 * short / 8)), int(short / 8))
     if hit is None:
         return None
     P, ox, oy = hit
@@ -314,8 +335,7 @@ def detect_board(img, debug_dir=None, tag="frame"):
     img = normalize_exposure(img)
     # proposals from independent heuristics; each is refined and the best-alternating one wins
     proposals = []
-    q = propose_from_screen(img)
-    if q is not None: proposals.append(("screen-comb", q))
+    for q in propose_from_screen(img): proposals.append(("screen-comb", q))
     blobs = square_blobs_adaptive(img)
     if len(blobs) >= 12: proposals.append(("adaptive", _quad_from_hull_edges(np.concatenate(blobs))))
     screen_quad = None; mask = None
@@ -330,6 +350,8 @@ def detect_board(img, debug_dir=None, tag="frame"):
         return None
     best = None
     for method, quad0 in proposals:
+        if not _valid_quad(quad0):
+            continue
         quad = quad0
         for _ in range(2):
             qq = refine_quad(img, quad)
@@ -340,6 +362,8 @@ def detect_board(img, debug_dir=None, tag="frame"):
         score, dark_ok = checker_score(board)
         if best is None or score > best[0]:
             best = (score, dark_ok, method, quad0, quad, board, M)
+    if best is None:
+        return None
     score, dark_ok, method, quad0, quad, board, M = best
     if debug_dir:
         dbg = img.copy()

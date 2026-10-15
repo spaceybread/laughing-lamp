@@ -104,19 +104,20 @@ class Classifier:
         ranked = sorted(best.items(), key=lambda kv: -kv[1])
         label, score = ranked[0]
         runner = ranked[1] if len(ranked) > 1 else (None, -1)
+        best = {str(k): float(v) for k, v in best.items()}
         if energy < 0.03:          # flat square: correlation is meaningless, it is empty
-            return ".", 1.0, runner
-        return str(label), float(score - runner[1]), runner
+            return ".", 1.0, {".": 1.0}
+        return str(label), float(score - runner[1]), best
 
-    def classify_board(self, board):
-        grid, conf = [], np.zeros((8, 8), np.float32)
+    def classify_board(self, board, with_scores=False):
+        grid, conf, scores = [], np.zeros((8, 8), np.float32), []
         for r in range(8):
-            row = ""
+            row = ""; srow = []
             for c in range(8):
-                lab, cf, _ = self.classify_square(board, r, c)
-                row += lab; conf[r, c] = cf
-            grid.append(row)
-        return grid, conf
+                lab, cf, sc = self.classify_square(board, r, c)
+                row += lab; conf[r, c] = cf; srow.append(sc)
+            grid.append(row); scores.append(srow)
+        return (grid, conf, scores) if with_scores else (grid, conf)
 
 
 if __name__ == "__main__":

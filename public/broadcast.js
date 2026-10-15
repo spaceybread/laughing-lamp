@@ -140,7 +140,7 @@
   function showResult(d) {
     if (!d || !d.ok) {
       hintEl.textContent = d && d.error ? d.error : 'no result';
-      if (performance.now() - resultAt > 10000) { lastResult = null; moveEl.textContent = ''; drawDots(); }
+      if ((d && d.clear) || performance.now() - resultAt > 10000) { lastResult = null; moveEl.textContent = ''; drawDots(); }
       return;
     }
     lastResult = d; resultAt = performance.now();

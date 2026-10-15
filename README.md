@@ -201,12 +201,25 @@ viewer at http://localhost:3000 shows the same result, the recognised board
 | `side` | `auto` | `white` / `black` if the auto guess (more of your pieces in the bottom half) is wrong |
 | `stream` | `1` | `0` stops the live video to the laptop; only pictures and results travel |
 
+### Game tracking (why it's not just vision)
+
+Only legal moves can happen between pictures, so the service tracks the game:
+each picture is matched against the tracked position and all its one- and
+two-ply continuations (bitboard agreement over 64 squares); the best match wins
+if it agrees on 58+ squares. That tolerates a few misread squares and tells us
+whose turn it is: the glasses say "opponent to move" instead of guessing. A
+reading close to the start position snaps to it exactly. If nothing matches
+(new game, lost track) the raw reading is adopted after it is stable, legal,
+and needed at most three repaired squares. `POST /reset` forgets the game.
+
+Templates are calibrated for two boards: the brown chess.com phone theme and
+the green chess.com web theme on a monitor. Add another with `POST /calibrate`
+(body = frame of the start position, your side at the bottom).
+
 ### Known limits
 
-- It always assumes it is your move; while the opponent thinks, the suggestion is
-  simply what you would play if it were your turn.
-- Templates were cut from the brown board theme and the default pieces at this
-  phone size. A different theme or piece set needs `POST /calibrate` with a
-  start-position frame (see `vision/service.py`).
+- A new theme or piece set needs one `POST /calibrate` with a start-position frame.
+- Picking up a game mid-way (tracker never saw the start) relies on the raw
+  reading being legal; blurry, tilted, hand-covered frames may never settle.
 - Phone lock screen, no board in view, or the board too small (< ~250 px wide in
   the 1280×720 frame) gives "board not found".

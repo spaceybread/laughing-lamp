@@ -52,8 +52,16 @@ def validate(board):
         if len(board.pieces(chess.PAWN, colour)) > 8: problems.append(f"too many {name} pawns")
     if board.pieces(chess.PAWN, chess.WHITE) & (chess.BB_RANK_1 | chess.BB_RANK_8): problems.append("white pawn on rank 1/8")
     if board.pieces(chess.PAWN, chess.BLACK) & (chess.BB_RANK_1 | chess.BB_RANK_8): problems.append("black pawn on rank 1/8")
+    for colour, name in ((chess.WHITE, "white"), (chess.BLACK, "black")):
+        for ptype, pname, limit in ((chess.ROOK, "rooks", 2), (chess.KNIGHT, "knights", 2), (chess.BISHOP, "bishops", 2), (chess.QUEEN, "queens", 1)):
+            n = len(board.pieces(ptype, colour))
+            if n > limit: problems.append(f"{n} {name} {pname}")
     if not problems and not board.is_valid():
-        problems.append(board.status().__str__())
+        st = board.status()
+        names = [n for n, flag in [("too many pieces", chess.STATUS_TOO_MANY_WHITE_PIECES | chess.STATUS_TOO_MANY_BLACK_PIECES),
+                                   ("side not to move is in check", chess.STATUS_OPPOSITE_CHECK),
+                                   ("bad castling rights", chess.STATUS_BAD_CASTLING_RIGHTS)] if st & flag]
+        problems.append(", ".join(names) or f"invalid position ({int(st)})")
     return problems
 
 
@@ -66,8 +74,15 @@ def engine():
 
 
 def best_move(fen, think_s=1.0, multipv=3):
+    global _engine
     board = chess.Board(fen)
-    info = engine().analyse(board, chess.engine.Limit(time=think_s), multipv=multipv)
+    if not board.is_valid():
+        return []
+    try:
+        info = engine().analyse(board, chess.engine.Limit(time=think_s), multipv=multipv)
+    except chess.engine.EngineTerminatedError:
+        _engine = None                      # Stockfish died (it segfaults on some illegal positions); restart once
+        info = engine().analyse(board, chess.engine.Limit(time=think_s), multipv=multipv)
     out = []
     for line in info:
         mv = line["pv"][0]

@@ -150,7 +150,13 @@
     }
   }
   function showResult(d) {
-    if (!d.ok) { msgEl.textContent = d.error || 'analysis failed'; lastResult = null; drawOverlay(); return; }
+    if (!d.ok) {
+      msgEl.textContent = d.error || 'analysis failed';
+      if (d.annotated) { annotEl.src = d.annotated; annotEl.classList.add('show'); }
+      if (d.fen) fenEl.textContent = d.fen;
+      if (d.clear) { bestEl.textContent = '—'; altsEl.textContent = ''; }
+      lastResult = null; drawOverlay(); return;
+    }
     lastResult = d; overlayUntil = performance.now() + 15000;
     if (d.annotated) { annotEl.src = d.annotated; annotEl.classList.add('show'); }
     fenEl.textContent = d.fen;
