@@ -174,6 +174,7 @@ glasses (/broadcast)  --picture every 3 s-->  Node :3000  -->  Python vision :30
 | `/` | laptop | what the glasses see, live, plus the recognised board, FEN and engine lines |
 | `/hud` | glasses | heads-up display: feed with a yellow move arrow (left 2/3), the move in large type and the model status (right 1/3). `./glasses.sh` opens this. |
 | `/broadcast` | glasses | plain full-screen preview with dots (`PAGE=broadcast ./glasses.sh`) |
+| `/hud?mirror=1` | laptop | the same HUD, fed by the glasses' live video and results: what the wearer sees, for screen recording |
 
 Preview the HUD on the laptop without glasses: `http://localhost:3000/hud?fake=1&assist=0`,
 then push a frame: `curl -X POST --data-binary @vision/samples/board_1.jpg localhost:3000/analyze`.

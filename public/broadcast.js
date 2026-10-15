@@ -17,6 +17,7 @@
   const SIDE = qs.get('side') || 'auto';           // auto | white | black (colour at the bottom of the phone screen)
   const STREAM = qs.get('stream') !== '0';         // stream=0: no live video to the laptop, only pictures + results
   const MARKS = qs.get('marks') || (location.pathname.indexOf('hud') >= 0 ? 'arrow' : 'dots');   // arrow | dots
+  const MIRROR = qs.get('mirror') === '1';         // on the laptop: show what the glasses' HUD shows (their video + the same results)
 
   const video = document.getElementById('preview');
   const statusEl = document.getElementById('status');
@@ -32,6 +33,55 @@
 
   const setStatus = (text, isErr) => { statusEl.textContent = text; statusEl.className = isErr ? 'err' : ''; };
   const send = (obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); };
+
+  // ---- mirror mode (laptop): receive the glasses' video instead of using a camera ----------
+  let mpc = null, mirrorFallback = null, mirrorMode = 'webrtc';
+  const mimg = document.getElementById('mirrorimg');
+  function mirrorRequest() {
+    if (mpc) { mpc.close(); mpc = null; }
+    send({ type: 'want-stream', mode: mirrorMode });
+    clearTimeout(mirrorFallback);
+    if (mirrorMode === 'webrtc') mirrorFallback = setTimeout(() => { if (!mpc || mpc.connectionState !== 'connected') { mirrorMode = 'frames'; mirrorRequest(); } }, 10000);
+  }
+  async function mirrorOffer(sdp) {
+    if (mpc) mpc.close();
+    mpc = new RTCPeerConnection({ iceServers: [] });
+    mpc.ontrack = (e) => { video.srcObject = e.streams[0]; if (mimg) mimg.style.display = 'none'; video.style.display = ''; };
+    mpc.onicecandidate = (e) => send({ type: 'ice', candidate: e.candidate });
+    mpc.onconnectionstatechange = () => { if (mpc.connectionState === 'connected') { clearTimeout(mirrorFallback); setStatus('Mirroring the glasses (WebRTC)'); } };
+    await mpc.setRemoteDescription(sdp);
+    const answer = await mpc.createAnswer();
+    await mpc.setLocalDescription(answer);
+    send({ type: 'answer', sdp: mpc.localDescription });
+  }
+  function mirrorFrame(buf) {
+    if (!mimg) return;
+    const url = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }));
+    mimg.onload = () => { URL.revokeObjectURL(url); video.style.display = 'none'; mimg.style.display = 'block'; };
+    mimg.src = url;
+  }
+  function connectMirror() {
+    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    ws = new WebSocket(scheme + location.host + '/ws');
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { send({ type: 'hello', role: 'viewer' }); setStatus('Waiting for the glasses…'); setModel('Waiting for the glasses…', 'warn'); };
+    ws.onclose = () => { setStatus('Server disconnected, retrying…', true); if (mpc) { mpc.close(); mpc = null; } setTimeout(connectMirror, 2000); };
+    ws.onmessage = async (ev) => {
+      if (ev.data instanceof ArrayBuffer) { mirrorFrame(ev.data); return; }
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      switch (msg.type) {
+        case 'broadcaster': if (msg.online) mirrorRequest(); else setModel('Glasses offline', 'bad'); break;
+        case 'offer': await mirrorOffer(msg.sdp); break;
+        case 'ice': if (mpc && msg.candidate) mpc.addIceCandidate(msg.candidate).catch(() => {}); break;
+        case 'result': showResult(msg.result); break;
+      }
+    };
+  }
+  // the mirror draws over whichever element is showing; both are object-fit: contain in #view
+  function mirrorFrameSize() {
+    if (mimg && mimg.style.display === 'block' && mimg.naturalWidth) return { w: mimg.naturalWidth, h: mimg.naturalHeight };
+    return video.videoWidth ? { w: video.videoWidth, h: video.videoHeight } : null;
+  }
 
   // ---- signaling ----------------------------------------------------------
   function connectWS() {
@@ -195,7 +245,9 @@
     dots.width = view.clientWidth; dots.height = view.clientHeight;
     const ctx = dots.getContext('2d');
     ctx.clearRect(0, 0, dots.width, dots.height);
-    if (!lastResult || !lastResult.arrow || !video.videoWidth) return;
+    if (!lastResult || !lastResult.arrow) return;
+    if (!MIRROR && !video.videoWidth) return;
+    if (MIRROR && !mirrorFrameSize()) return;
     const fw = lastResult.frame.w, fh = lastResult.frame.h;
     const scale = Math.min(dots.width / fw, dots.height / fh);
     const ox = (dots.width - fw * scale) / 2, oy = (dots.height - fh * scale) / 2;
@@ -285,7 +337,12 @@
     if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {});
   }
 
-  startBtn.onclick = startCamera;
-  connectWS();
-  if (AUTOSTART) startCamera();
+  if (MIRROR) {
+    if (document.getElementById('bar')) document.getElementById('bar').style.display = 'none';
+    connectMirror();
+  } else {
+    startBtn.onclick = startCamera;
+    connectWS();
+    if (AUTOSTART) startCamera();
+  }
 })();
