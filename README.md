@@ -82,6 +82,12 @@ BROWSER=org.mozilla.firefox ./glasses.sh
 
 ## Over Wi-Fi instead of USB (no cable after setup)
 
+**Shortcut:** with the cable plugged in, `./glasses_wifi.py "Your Network" --adb-wifi`
+does steps 1 and 2 below by itself: it drives the glasses' Wi-Fi settings over ADB
+(finds the network by name, types the password, taps Connect), waits for an IP,
+switches ADB to Wi-Fi and prints the `export GLASSES_IP=...` line. It prompts for
+the password so it never lands in your shell history.
+
 ADB itself can run over Wi-Fi, and `adb reverse` works the same way, so the
 glasses keep seeing the server as `http://localhost:3000` (a secure origin,
 no certificates needed). With both devices on one LAN, WebRTC connects too,
