@@ -38,12 +38,17 @@
     const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
     ws = new WebSocket(scheme + location.host + '/ws');
     ws.binaryType = 'arraybuffer';
-    ws.onopen = () => { send({ type: 'hello', role: 'broadcaster' }); if (stream) send({ type: 'ready' }); if (!stream && !requesting) setStatus('Connected. Waiting for camera…'); };
-    ws.onclose = () => {
-      setStatus('Server disconnected, retrying…', true);
+    ws.onopen = () => { send({ type: 'hello', role: 'broadcaster', fake: FAKE }); if (stream) send({ type: 'ready' }); if (!stream && !requesting) setStatus('Connected. Waiting for camera…'); };
+    ws.onclose = (ev) => {
       for (const pc of peers.values()) pc.close();
       peers.clear();
       stopFrames();
+      if (ev && (ev.code === 4000 || ev.code === 4001)) {        // another source owns the slot: do not fight for it
+        setStatus(ev.code === 4001 ? 'Glasses are broadcasting; this page stays passive.' : 'Replaced by another camera source.', true);
+        setModel && setModel('Another camera source is active', 'warn');
+        return;
+      }
+      setStatus('Server disconnected, retrying…', true);
       setTimeout(connectWS, 2000);
     };
     ws.onmessage = async (ev) => {

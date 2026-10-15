@@ -61,7 +61,7 @@ else
 fi
 # the stock browser asks for the camera on every load: accept it for our own page.
 # Only when the browser is the focused window, and only by tapping the Allow button's own bounds.
-for i in 1 2 3 4 5 6; do
+for i in $(seq 1 15); do
   sleep 1
   adb shell dumpsys window 2>/dev/null | grep -q "mCurrentFocus=.*com.android.browser" || continue
   dump=$(adb exec-out uiautomator dump /dev/tty 2>/dev/null)

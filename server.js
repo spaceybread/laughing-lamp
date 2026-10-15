@@ -122,7 +122,16 @@ wss.on('connection', (ws, req) => {
     switch (msg.type) {
       case 'hello':
         if (msg.role === 'broadcaster') {
-          if (broadcaster && broadcaster !== ws) broadcaster.close(4000, 'replaced by a new broadcaster');
+          // One camera source at a time. The glasses (Android browser) always win; a page on the
+          // laptop (test pattern / webcam) may only take the slot when no glasses are connected.
+          const ua = String(req.headers['user-agent'] || '');
+          ws.isGlasses = /Android/i.test(ua) && !msg.fake;
+          if (broadcaster && broadcaster !== ws && broadcaster.readyState === broadcaster.OPEN && broadcaster.isGlasses && !ws.isGlasses) {
+            send(ws, { type: 'rejected', reason: 'the glasses are already broadcasting' });
+            ws.close(4001, 'glasses already broadcasting');
+            return;
+          }
+          if (broadcaster && broadcaster !== ws) { send(broadcaster, { type: 'replaced' }); broadcaster.close(4000, 'replaced by a new broadcaster'); }
           broadcaster = ws;
           ws.role = 'broadcaster';
           ws.ready = false; // becomes true once its camera is running
