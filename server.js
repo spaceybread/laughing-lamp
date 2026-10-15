@@ -20,6 +20,7 @@ const send = (ws, obj) => { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.st
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/broadcast', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'broadcast.html')));
+app.get('/hud', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'hud.html')));
 
 // ---- chess analysis -------------------------------------------------------
 // GET /analyze?side=auto|white|black&think=1  -> asks the glasses for a full-res snapshot,

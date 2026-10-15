@@ -167,6 +167,17 @@ glasses (/broadcast)  --picture every 3 s-->  Node :3000  -->  Python vision :30
         ^-------------- best move + dot positions ----------------------'
 ```
 
+### Pages
+
+| URL | Where | What |
+|---|---|---|
+| `/` | laptop | what the glasses see, live, plus the recognised board, FEN and engine lines |
+| `/hud` | glasses | heads-up display: feed with a yellow move arrow (left 2/3), the move in large type and the model status (right 1/3). `./glasses.sh` opens this. |
+| `/broadcast` | glasses | plain full-screen preview with dots (`PAGE=broadcast ./glasses.sh`) |
+
+Preview the HUD on the laptop without glasses: `http://localhost:3000/hud?fake=1&assist=0`,
+then push a frame: `curl -X POST --data-binary @vision/samples/board_1.jpg localhost:3000/analyze`.
+
 ### Run (three terminals, plus the glasses step above)
 
 ```bash

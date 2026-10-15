@@ -10,7 +10,8 @@
 #      GLASSES_IP (when set, every command first does `adb connect $GLASSES_IP:5555`, i.e. Wi-Fi ADB)
 set -euo pipefail
 PORT="${PORT:-3000}"
-URL="http://localhost:${PORT}/broadcast?autostart=1"
+PAGE="${PAGE:-hud}"              # hud (split heads-up display) or broadcast (plain preview)
+URL="http://localhost:${PORT}/${PAGE}?autostart=1"
 
 cmd="${1:-usb}"
 if [[ -n "${GLASSES_IP:-}" && "$cmd" != "wifi" ]]; then
@@ -58,11 +59,16 @@ if [[ -n "${BROWSER:-}" ]]; then
 else
   adb shell am start -a android.intent.action.VIEW -d "$URL"
 fi
-# the stock browser asks for the camera on every load: accept it for our own page
+# the stock browser asks for the camera on every load: accept it for our own page.
+# Only when the browser is the focused window, and only by tapping the Allow button's own bounds.
 for i in 1 2 3 4 5 6; do
   sleep 1
-  if adb exec-out uiautomator dump /dev/tty 2>/dev/null | grep -q 'text="Allow"'; then
-    adb shell input tap 960 673; echo "Accepted the camera prompt."; break
+  adb shell dumpsys window 2>/dev/null | grep -q "mCurrentFocus=.*com.android.browser" || continue
+  dump=$(adb exec-out uiautomator dump /dev/tty 2>/dev/null)
+  bounds=$(printf '%s' "$dump" | grep -oE 'text="Allow"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | head -1)
+  if [[ -n "$bounds" ]]; then
+    read x1 y1 x2 y2 < <(echo "$bounds" | tr -c '0-9' ' ')
+    adb shell input tap $(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 )); echo "Accepted the camera prompt."; break
   fi
 done
 echo "Opened $URL on the glasses."

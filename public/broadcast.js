@@ -16,6 +16,7 @@
   const ASSIST_MS = Number(qs.get('every')) || 3000;
   const SIDE = qs.get('side') || 'auto';           // auto | white | black (colour at the bottom of the phone screen)
   const STREAM = qs.get('stream') !== '0';         // stream=0: no live video to the laptop, only pictures + results
+  const MARKS = qs.get('marks') || (location.pathname.indexOf('hud') >= 0 ? 'arrow' : 'dots');   // arrow | dots
 
   const video = document.getElementById('preview');
   const statusEl = document.getElementById('status');
@@ -111,6 +112,26 @@
   const moveEl = document.getElementById('move');
   const hintEl = document.getElementById('hint');
   let lastResult = null, resultAt = 0, assisting = false;
+  const modelEl = document.getElementById('model');
+  let lastStatus = { text: 'starting…', level: '' }, lastOkAt = 0;
+
+  // HUD status block: what the model thinks it is doing, plus its confidence numbers
+  function setModel(text, level, d) {
+    lastStatus = { text, level };
+    if (!modelEl) return;
+    const bits = [];
+    if (d && d.board_score != null) bits.push('board ' + Number(d.board_score).toFixed(2));
+    if (d && d.agree != null) bits.push('match ' + d.agree + '/64');
+    if (d && d.moves && d.moves[0]) bits.push('eval ' + d.moves[0].eval);
+    if (d && d.side) bits.push('you: ' + d.side);
+    modelEl.innerHTML = '<b class="' + (level || '') + '">' + text + '</b>' +
+      (bits.length ? '<br>' + bits.join(' · ') : '') +
+      '<br><span id="age"></span>';
+  }
+  setInterval(() => {
+    const age = document.getElementById('age');
+    if (age) age.textContent = lastOkAt ? ('last good read ' + Math.round((performance.now() - lastOkAt) / 1000) + 's ago') : 'no good read yet';
+  }, 1000);
 
   function takePicture() {
     return new Promise((resolve) => {
@@ -132,6 +153,7 @@
       showResult(d);
     } catch (e) {
       hintEl.textContent = 'analysis failed: ' + e.message;
+      setModel('Mac unreachable: ' + e.message, 'bad');
     } finally {
       assisting = false;
     }
@@ -139,18 +161,25 @@
 
   function showResult(d) {
     if (!d || !d.ok) {
-      hintEl.textContent = d && d.error ? d.error : 'no result';
-      if ((d && d.clear) || performance.now() - resultAt > 10000) { lastResult = null; moveEl.textContent = ''; drawDots(); }
+      const err = d && d.error ? d.error : 'no result';
+      hintEl.textContent = err;
+      const level = /opponent/.test(err) ? 'ok' : (/confirm|unclear|unreadable/.test(err) ? 'warn' : 'bad');
+      setModel(/opponent/.test(err) ? 'Opponent to move' : err, level, d);
+      if (d && d.agree != null) lastOkAt = performance.now();
+      if ((d && d.clear) || performance.now() - resultAt > 10000) { lastResult = null; moveEl.textContent = modelEl ? '…' : ''; drawDots(); }
       return;
     }
-    lastResult = d; resultAt = performance.now();
+    lastResult = d; resultAt = performance.now(); lastOkAt = resultAt;
     if (d.problems && d.problems.length) {
       hintEl.textContent = 'position unclear: ' + d.problems.join(', ');
+      setModel('Position unclear: ' + d.problems.join(', '), 'warn', d);
       moveEl.textContent = '';
     } else if (d.moves && d.moves.length) {
       const m = d.moves[0];
       hintEl.textContent = '';
       moveEl.innerHTML = m.san + '<small>' + m.from + ' \u2192 ' + m.to + ' \u00b7 ' + m.eval + '</small>';
+      if (modelEl) moveEl.style.fontSize = (m.san.length <= 3 ? 150 : m.san.length <= 5 ? 110 : 78) + 'px';   // HUD: fit the panel
+      setModel('Your move', 'ok', d);
     }
     drawDots();
   }
@@ -167,6 +196,21 @@
     const ox = (dots.width - fw * scale) / 2, oy = (dots.height - fh * scale) / 2;
     const rad = Math.max(6, (lastResult.square_px || 40) * scale * 0.3);
     const P = (p) => [ox + p[0] * scale, oy + p[1] * scale];
+    if (MARKS === 'arrow') {
+      const [x1, y1] = P(lastResult.arrow.from), [x2, y2] = P(lastResult.arrow.to);
+      const ang = Math.atan2(y2 - y1, x2 - x1), head = Math.max(14, rad * 1.6), w = Math.max(6, rad * 0.6);
+      // shorten the shaft so the head ends at the square centre
+      const ex = x2 - head * 0.6 * Math.cos(ang), ey = y2 - head * 0.6 * Math.sin(ang);
+      for (const [col, lw] of [['rgba(0,0,0,.75)', w + 6], ['#ffd23c', w]]) {
+        ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(ex, ey); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - head * Math.cos(ang - 0.45), y2 - head * Math.sin(ang - 0.45));
+        ctx.lineTo(x2 - head * Math.cos(ang + 0.45), y2 - head * Math.sin(ang + 0.45)); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.arc(x1, y1, lw * 0.9, 0, Math.PI * 2); ctx.fill();
+      }
+      return;
+    }
     for (const [pt, col] of [[lastResult.arrow.from, '#2ecc40'], [lastResult.arrow.to, '#ff3b30']]) {
       const [x, y] = P(pt);
       ctx.beginPath(); ctx.arc(x, y, rad + 3, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fill();
@@ -206,6 +250,7 @@
       }
     } catch (e) {
       setStatus(`Camera error: ${e.name} – ${e.message}`, true);
+      setModel('Camera error: ' + e.name, 'bad');
       startBtn.disabled = false;
       return;
     } finally {
@@ -227,6 +272,7 @@
     if (frameViewers > 0) startFrames();
     if (ASSIST) {
       hintEl.textContent = 'assist on';
+      setModel('Looking for the board…', 'warn');
       document.getElementById('bar').style.display = 'none';     // give the whole display to the picture
       setTimeout(assistOnce, 1500); setInterval(assistOnce, ASSIST_MS);
     }

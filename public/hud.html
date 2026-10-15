@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glasses HUD</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
+  #wrap { display: flex; flex-direction: row; height: 100%; }
+  #view { flex: 0 0 66.666%; position: relative; background: #000; }
+  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #dots { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  #panel { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 16px 20px; border-left: 2px solid #222; min-width: 0; }
+  #move { font-size: 150px; font-weight: 800; line-height: 1; letter-spacing: -0.02em; white-space: nowrap; }
+  #move small { display: block; font-size: 30px; font-weight: 500; color: #bbb; margin-top: 10px; letter-spacing: 0; }
+  #model { margin-top: 26px; font-size: 24px; line-height: 1.35; color: #9aa; }
+  #model b { color: #fff; font-weight: 600; }
+  #model .ok { color: #3ddc84; } #model .warn { color: #ffd23c; } #model .bad { color: #ff5c5c; }
+  #hint { display: none; }
+  #bar { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="view">
+    <video id="preview" autoplay muted playsinline></video>
+    <canvas id="dots"></canvas>
+    <div id="hint"></div>
+  </div>
+  <div id="panel">
+    <div id="move">—</div>
+    <div id="model"><b>starting…</b></div>
+  </div>
+  <div id="bar"><button id="start">Start camera</button><span id="status"></span><span id="viewers"></span></div>
+</div>
+<script src="/broadcast.js"></script>
+</body>
+</html>
