@@ -99,6 +99,10 @@ def summarize(run_dir, pgn=None):
     dur_s = max(1e-3, (t_end - t0) / 1000)
     r = {"run": start.get("id", os.path.basename(run_dir)), "scenario": start.get("scenario", "?"), "net": start.get("net", ""),
          "start": t0, "duration_s": round(dur_s, 1)}
+    # a run folder renamed afterwards (e.g. <id>_home-home-aborted-glasses-died) keeps that label
+    base = os.path.basename(os.path.normpath(run_dir))
+    if "_" in base and base.split("_", 1)[1] != r["scenario"]:
+        r["scenario"] = base.split("_", 1)[1]
     series = {}
 
     # ---- clocks and RTT -------------------------------------------------------------------

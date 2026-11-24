@@ -10,7 +10,8 @@ analyze.py        traces -> results/ (summary.csv, summary.md, figures)
 carve.py          cut a time window out of traces/_idle/ into a run
 pgn2json.py       pgn/*.pgn -> pgn/games.json (replay-board playlist); --synth N = generate Stockfish games
 pgn/              ground truth: 2 chess.com bot games + 3 seeded Stockfish games
-results/          analysis of the recorded scenarios
+results/          analysis of the main scenarios (figures + tables)
+  all_runs/       tables over every recorded run (total field time)
 traces/           raw logs, one folder per run (git-ignored, kept locally)
 ```
 
@@ -76,9 +77,13 @@ traces/<YYYYMMDD-HHMMSS>_<scenario>/
 | `kpi.png` | assistant KPIs; time since the last good read |
 | `part_d.png` | raw vs tracked reading against ground truth (only for runs that have ground truth) |
 
-## Recorded scenarios (November 2026)
+## Recorded runs
 
-The committed `results/` come from 35 runs of 85 s each, 49.6 min in total. In every run these were open:
+Total field time: **42 runs, 63.6 min** (`results/all_runs/`). That is the main scenarios below plus the additional runs further down.
+
+### Main scenarios (November 2026)
+
+`results/` (tables and figures) comes from 35 runs of 85 s each, 49.6 min in total. In every run these were open:
 - the HUD on the glasses;
 - the laptop viewer;
 - a phone mirror (`/hud?mirror=1`), which is a second WebRTC stream from the glasses.
@@ -104,8 +109,31 @@ Caveats:
 | `5g-eduroam-tunnel` | Run 1 includes phone-mirror reconnects. |
 | `5g-glasses-home-laptop` | Run 6 (`20261124-051242`) is a tracker cold start after a mid-game `/reset`: the raw reading saw the white king as black. Not a network effect. |
 | Resolution | The glasses send 1280×720 to a single viewer, and 320–640 px wide when the phone mirror is also open. |
-| Excluded | `*-aborted-*` runs (glasses battery died; viewer stuck in JPEG mode) and `check-*` setup runs. |
+| Excluded from `results/` | `*-aborted-*` runs (in `all_runs/`, see below) and `check-*` setup runs (not counted anywhere). |
 | `part_d.png` | Pooled per picture. home-home: raw 0.65, tracked 1.00 (n=351). 5G glasses: raw 0.58, tracked 0.86 (n=214). Runs 6–7 pull the 5G tracked figure down; without them it is 167/168. The campus scenario has no ground truth. |
+
+### Additional runs
+
+These are included in `results/all_runs/` and the 63.6 min total.
+
+| Run | Date | Length | Setup | What it shows |
+|---|---|---|---|---|
+| `parta-usb-frames` | Oct 15 | 3.1 min | glasses on the USB cable, JPEG frames | wired baseline (no Wi-Fi) |
+| `parta-wifi-webrtc` | Oct 15 | 3.0 min | home Wi-Fi, WebRTC | live bot game, scored against `pgn/game2_2347152640.pgn` |
+| `home-game-after-run2` | Oct 15 | 2.4 min | home Wi-Fi | live game (carved from the idle log) |
+| `home-home-aborted-glasses-died` | Nov 23 | 3 runs, 4.1 min | home Wi-Fi | failure: the glasses battery ran out mid-run (laptop USB cannot keep up) |
+| `home-home-aborted-viewer-frames` | Nov 23 | 1.3 min | home Wi-Fi | failure: Chrome viewer could not do LAN WebRTC and fell back to JPEG frames |
+
+Scenario labels come from the run folder name, so renamed runs keep their own row.
+
+Reproduce:
+
+```sh
+T=Bonus-PartC/traces
+.venv/bin/python Bonus-PartC/analyze.py --no-figures --out Bonus-PartC/results/all_runs \
+    $T/*_5g-eduroam-tunnel $T/*_home-home $T/*_5g-glasses-home-laptop \
+    $T/*_parta-usb-frames $T/*_parta-wifi-webrtc $T/*_home-game-after-run2 $T/*_home-home-aborted-*
+```
 
 ## Metrics
 
