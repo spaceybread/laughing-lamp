@@ -1,4 +1,4 @@
-# Chess Assistant on INMO Air2 Smart Glasses (CS 536 bonus project)
+# Chess Assistant on INMO Air2 Smart Glasses
 
 The INMO Air2 glasses stream their camera to a laptop. The laptop finds the chess board in
 the picture (OpenCV), reads the position, asks Stockfish for the best move and sends it back to
