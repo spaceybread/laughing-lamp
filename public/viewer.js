@@ -99,7 +99,7 @@
           break;
         case 'offer': if (mode === 'webrtc') await onOffer(msg.sdp); break;
         case 'result': if (msg.annotated) msg.result.annotated = msg.annotated; showResult(msg.result); break;
-        case 'ice': if (pc && msg.candidate) pc.addIceCandidate(msg.candidate).catch(() => {}); break;
+        case 'ice': if (msg.candidate) evt('ice_remote', { c: msg.candidate.candidate }); if (pc && msg.candidate) pc.addIceCandidate(msg.candidate).catch((e) => evt('ice_add_error', { err: String(e) })); break;
         case 'ping': send({ type: 'pong', ts: msg.ts, tc: Date.now() }); onPingInfo(msg.info); break;
         case 'run': onRun(msg); break;
         case 'probe_result': onProbe(msg); break;
@@ -142,10 +142,10 @@
   // ---- WebRTC -------------------------------------------------------------
   async function onOffer(sdp) {
     if (pc) pc.close();
-    pc = new RTCPeerConnection({ iceServers: [] });
+    pc = new RTCPeerConnection({ iceServers: window.ICE_SERVERS || [] });
     const createdAt = Date.now();
     pc.ontrack = (e) => { video.srcObject = e.streams[0]; showVideo(true); };
-    pc.onicecandidate = (e) => send({ type: 'ice', candidate: e.candidate });
+    pc.onicecandidate = (e) => { if (e.candidate) evt('ice_local', { c: e.candidate.candidate }); send({ type: 'ice', candidate: e.candidate }); };
     pc.onconnectionstatechange = () => {
       evt('peer_state', { state: pc.connectionState, age_ms: Date.now() - createdAt });
       if (pc.connectionState === 'connected') { clearTimeout(fallbackTimer); setStatus('Live (WebRTC)', 'ok'); }

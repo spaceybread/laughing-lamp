@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Carve a time window out of traces/_idle/events.jsonl into its own run directory.
+"""Carve a time window out of Bonus-PartC/traces/_idle/events.jsonl into its own run directory.
 
     .venv/bin/python Bonus-PartC/carve.py "2026-10-15 16:58:00" "2026-10-15 17:00:00" home-game-after-run2 [net] [note]
 
@@ -22,7 +22,7 @@ def main():
     t0, t1, scenario = ms(sys.argv[1]), ms(sys.argv[2]), sys.argv[3]
     net = sys.argv[4] if len(sys.argv) > 4 else ""
     note = sys.argv[5] if len(sys.argv) > 5 else "carved from _idle"
-    src = os.path.join(ROOT, "traces", "_idle", "events.jsonl")
+    src = os.path.join(ROOT, "Bonus-PartC", "traces", "_idle", "events.jsonl")
     with open(src) as f:
         ev = [json.loads(l) for l in f if l.strip()]
     sel = [e for e in ev if t0 <= e["t"] <= t1]
@@ -30,7 +30,7 @@ def main():
         sys.exit("no events in that window")
     stamp = datetime.datetime.fromtimestamp(t0 / 1000).strftime("%Y%m%d-%H%M%S")
     run_id = f"{stamp}_{scenario}"
-    out = os.path.join(ROOT, "traces", run_id)
+    out = os.path.join(ROOT, "Bonus-PartC", "traces", run_id)
     os.makedirs(os.path.join(out, "frames"), exist_ok=True)
     head = {"t": t0, "ev": "run_start", "id": run_id, "scenario": scenario, "net": net, "note": note, "startedAt": t0, "saveFrames": False, "carved": True}
     tail = {"t": sel[-1]["t"], "ev": "run_stop", "id": run_id, "duration_ms": sel[-1]["t"] - t0, "carved": True}

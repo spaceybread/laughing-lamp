@@ -1,8 +1,26 @@
+# --- dependencies (recreated by ./setup.sh) ---
 node_modules/
-certs/
 .venv/
-vision/templates/*.png
-vision/debug/
 __pycache__/
-traces/
-Bonus-PartC/results/
+*.pyc
+
+# --- local settings and secrets ---
+# hotspot name and password for demo.sh (template: demo.env.example)
+demo.env
+# self-signed TLS certificates from `npm run gen-cert`
+certs/
+
+# --- generated at run time ---
+# demo.sh service logs
+logs/
+# raw field-run logs and frames: kept locally, not submitted (see Bonus-PartC/README.md)
+Bonus-PartC/traces/
+# debug images from `python vision/board.py`
+vision/debug/
+# early per-piece crops, unused (the model is vision/templates/calib/templates.npz)
+vision/templates/*.png
+
+# --- OS / editors ---
+.DS_Store
+.vscode/
+.idea/

@@ -333,7 +333,9 @@ def finish(r, img, shown_grid, conf, side, board, moves, agree, st, cached, repl
 def reset():
     """Forget the tracked game (e.g. when starting a new one and the tracker is stuck)."""
     state.update(board=None, side=None, raw_fen=None, raw_count=0, raw_grid=None)
-    return jsonify(ok=True)
+    if request.args.get("cache") == "1":       # also forget engine results (start every scenario cold)
+        state["cache"] = {}
+    return jsonify(ok=True, cache=len(state["cache"]))
 
 
 if __name__ == "__main__":

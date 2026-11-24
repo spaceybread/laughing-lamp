@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay board</title>
+<style>
+  /* chess.com-like web look (dark page, green board): what the recogniser already knows from monitors */
+  html, body { margin: 0; height: 100%; background: #312e2b; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+  #wrap { height: 100%; display: flex; align-items: center; justify-content: center; }
+  #board { height: 94vmin; width: 94vmin; display: block; }
+  #info { position: fixed; left: 10px; bottom: 8px; color: #8b8987; font-size: 13px; line-height: 1.4; }
+  #info b { color: #c8c6c4; }
+  #state { position: fixed; right: 10px; bottom: 8px; color: #8b8987; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="wrap"><svg id="board" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg"></svg></div>
+<div id="info">loading…</div>
+<div id="state"></div>
+<script src="/replay.js"></script>
+</body>
+</html>

@@ -5,7 +5,8 @@
 // - /ws                 -> WebSocket used for WebRTC signaling and for the
 //                          JPEG-frame fallback (binary messages).
 // - /analyze            -> chess analysis through the Python vision service
-// - /run/*              -> Part C field-run controller; everything is traced to traces/<run>/
+// - /replay             -> replay board (Bonus-PartC/pgn/games.json) for Part C runs
+// - /run/*              -> Part C field-run controller; everything is traced to Bonus-PartC/traces/<run>/
 'use strict';
 
 const express = require('express');
@@ -18,22 +19,78 @@ const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT) || 3000;
 const VISION = process.env.VISION_URL || 'http://127.0.0.1:3001';
-const TRACE_DIR = process.env.TRACE_DIR || path.join(__dirname, 'traces');
+const TRACE_DIR = process.env.TRACE_DIR || path.join(__dirname, 'Bonus-PartC', 'traces');
 let broadcaster = null;        // the single camera source (the glasses)
 const viewers = new Map();     // id -> ws
 let nextId = 1;
 const send = (ws, obj) => { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)); };
 const broadcastAll = (obj) => { send(broadcaster, obj); for (const v of viewers.values()) send(v, obj); };
 const lanIps = () => Object.values(os.networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
+
+// ---- access over the internet (demo.sh: cloudflared tunnel) -----------------------------
+// Requests straight from this machine (the laptop viewer, curl, the glasses via `adb reverse`)
+// are always allowed. Anything that came through a proxy/tunnel needs ACCESS_KEY, given once as
+// ?k=<key> (then remembered in a cookie, which also covers the page's fetches and WebSocket).
+// Without ACCESS_KEY, proxied requests are refused, so a tunnel can never expose an open relay.
+// Direct LAN clients keep working without a key unless ACCESS_KEY is set.
+const ACCESS_KEY = process.env.ACCESS_KEY || '';
+const ICE_SERVERS = (() => { try { return JSON.parse(process.env.ICE_SERVERS || '[]'); } catch { console.error('ICE_SERVERS is not valid JSON; using []'); return []; } })();
+const PROXY_HEADERS = ['x-forwarded-for', 'cf-connecting-ip', 'forwarded', 'x-real-ip'];
+const isLoopback = (a) => a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+const viaProxy = (req) => PROXY_HEADERS.some((h) => req.headers[h]);
+const clientIp = (req) => String(req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0] || req.socket.remoteAddress).trim();
+const keyMatches = (k) => {
+  if (!ACCESS_KEY || typeof k !== 'string') return false;
+  const a = Buffer.from(k), b = Buffer.from(ACCESS_KEY);
+  return a.length === b.length && require('crypto').timingSafeEqual(a, b);
+};
+const cookieKey = (req) => { const m = /(?:^|;\s*)k=([^;]*)/.exec(req.headers.cookie || ''); return m ? decodeURIComponent(m[1]) : null; };
+const queryKey = (req) => new URL(req.url, 'http://x').searchParams.get('k');
+function authorized(req) {
+  const proxied = viaProxy(req);
+  if (isLoopback(req.socket.remoteAddress) && !proxied) return true;
+  if (ACCESS_KEY) return keyMatches(queryKey(req)) || keyMatches(cookieKey(req));
+  return !proxied;
+}
+
+const keyFile = path.join(__dirname, 'certs', 'key.pem');
+const certFile = path.join(__dirname, 'certs', 'cert.pem');
+const useTls = fs.existsSync(keyFile) && fs.existsSync(certFile);
 const app = express();
+app.use((req, res, next) => {
+  if (!authorized(req)) return res.status(403).type('text').send(ACCESS_KEY ? 'Forbidden: add ?k=<access key> to the URL.' : 'Forbidden: remote access needs ACCESS_KEY (use ./demo.sh).');
+  if (ACCESS_KEY && keyMatches(queryKey(req)) && !keyMatches(cookieKey(req))) {
+    const secure = req.headers['x-forwarded-proto'] === 'https' || useTls;
+    res.append('Set-Cookie', `k=${encodeURIComponent(ACCESS_KEY)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure ? '; Secure' : ''}`);
+  }
+  next();
+});
+app.get('/config.js', (_req, res) => res.type('js').set('cache-control', 'no-store').send(`window.ICE_SERVERS = ${JSON.stringify(ICE_SERVERS)};\n`));
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/broadcast', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'broadcast.html')));
 app.get('/hud', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'hud.html')));
 
+// ---- replay board (Part C/D) --------------------------------------------------------------
+// /replay shows Bonus-PartC/pgn/games.json one ply at a time on the laptop screen; the page reports every
+// position change (logged as `replay` events = ground truth for each picture). It is not a viewer.
+const replays = new Set();
+app.get('/replay', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'replay.html')));
+app.get('/replay/games.json', (_req, res) => res.set('cache-control', 'no-store').sendFile(path.join(__dirname, 'Bonus-PartC', 'pgn', 'games.json')));
+let lastReplay = null;
+// POST /replay?action=play|pause|restart|next
+app.post('/replay', (req, res) => {
+  const action = String(req.query.action || '');
+  if (!['play', 'pause', 'restart', 'next'].includes(action)) return res.status(400).json({ ok: false, error: 'bad action' });
+  trace.log('control', { action: 'replay_' + action });
+  for (const r of replays) send(r, { type: 'replay', action });
+  res.json({ ok: true, pages: replays.size, last: lastReplay });
+});
+app.get('/replay/state', (_req, res) => res.json({ ok: true, pages: replays.size, last: lastReplay }));
+
 // ---- trace logger (Part C) ------------------------------------------------
-// One directory per field run: traces/<id>/events.jsonl (one JSON object per line, `t` = server
+// One directory per field run: Bonus-PartC/traces/<id>/events.jsonl (one JSON object per line, `t` = server
 // clock in ms since epoch, `ev` = event type) plus frames/ with every picture that was analysed.
-// Outside a run, events still go to traces/_idle/ so nothing is lost; the analysis scripts in
+// Outside a run, events still go to Bonus-PartC/traces/_idle/ so nothing is lost; the analysis scripts in
 // Bonus-PartC/ only look at named runs. Event types are documented in Bonus-PartC/README.md.
 const trace = {
   run: null, stream: null, dir: null, counters: {},
@@ -57,7 +114,7 @@ const trace = {
     return 'frames/' + name;
   },
 };
-const clientInfo = (ws) => ws ? { role: ws.role, id: ws.id || 0, ip: ws.ip, ua: ws.ua, glasses: !!ws.isGlasses } : null;
+const clientInfo = (ws) => ws ? { role: ws.role, id: ws.id || 0, ip: ws.ip, via: ws.via, ua: ws.ua, glasses: !!ws.isGlasses } : null;
 const runInfo = () => trace.run ? Object.assign({}, trace.run, { elapsed_ms: Date.now() - trace.run.startedAt, counters: trace.counters }) : null;
 
 app.get('/run', (_req, res) => res.json({ ok: true, run: runInfo(), glasses: clientInfo(broadcaster), viewers: viewers.size }));
@@ -70,7 +127,7 @@ app.post('/run/start', (req, res) => {
   const id = `${stamp}_${scenario}`;
   trace.run = { id, scenario, net: String(req.query.net || ''), note: String(req.query.note || ''), startedAt: Date.now(), saveFrames: req.query.frames !== '0' };
   trace.open(path.join(TRACE_DIR, id));
-  trace.log('run_start', Object.assign({}, trace.run, { host: os.hostname(), lan: lanIps(), glasses: clientInfo(broadcaster), viewers: [...viewers.values()].map(clientInfo), vision: VISION }));
+  trace.log('run_start', Object.assign({}, trace.run, { host: os.hostname(), lan: lanIps(), glasses: clientInfo(broadcaster), viewers: [...viewers.values()].map(clientInfo), vision: VISION, replay: lastReplay }));
   broadcastAll({ type: 'run', active: true, id, scenario });
   if (req.query.probe !== '0') broadcastAll({ type: 'probe', bytes: Number(req.query.probe_bytes) || 2000000 });
   console.log(`[run] started ${id}`);
@@ -169,7 +226,7 @@ async function analyzeImage(buf, query, res, meta) {
     if (meta.src !== 'glasses') send(broadcaster, { type: 'result', result: lite });
   } catch (e) {
     trace.log('analyze', Object.assign(rec, { status: 0, total_ms: Date.now() - t0, ok: false, error: e.message }));
-    res.status(502).json({ ok: false, req: id, error: `vision service unreachable (${e.message}); start it with: .venv/bin/python vision/service.py` });
+    res.status(502).json({ ok: false, req: id, error: `vision service unreachable (${e.message}); start everything with ./demo.sh, or just the service with .venv/bin/python vision/service.py` });
   }
 }
 
@@ -191,14 +248,11 @@ app.get('/snapshot.jpg', async (req, res) => {
 
 // HTTPS if certs/ exists (needed for camera access over Wi-Fi), else plain HTTP
 // (fine when the glasses reach the server as http://localhost via `adb reverse`).
-const keyFile = path.join(__dirname, 'certs', 'key.pem');
-const certFile = path.join(__dirname, 'certs', 'cert.pem');
-const useTls = fs.existsSync(keyFile) && fs.existsSync(certFile);
 const server = useTls
   ? https.createServer({ key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) }, app)
   : http.createServer(app);
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({ server, path: '/ws', verifyClient: ({ req }) => authorized(req) });
 
 const frameViewerCount = () => [...viewers.values()].filter((v) => v.wantsFrames).length;
 const notifyCounts = () => {
@@ -215,7 +269,8 @@ wss.on('connection', (ws, req) => {
   ws.role = null;
   ws.wantsFrames = false;
   ws.isAlive = true;
-  ws.ip = req.socket.remoteAddress;
+  ws.ip = clientIp(req);
+  ws.via = viaProxy(req) ? 'tunnel' : 'direct';
   ws.ua = String(req.headers['user-agent'] || '').slice(0, 160);
   ws.openedAt = Date.now();
   ws.rtt = null; ws.offset = null; ws.dropped = 0; ws.sentFrames = 0; ws.sentBytes = 0;
@@ -258,6 +313,11 @@ wss.on('connection', (ws, req) => {
           ws.ready = false; // becomes true once its camera is running
           console.log(`[broadcaster] connected from ${ws.ip}`);
           notifyCounts();
+        } else if (msg.role === 'replay') {
+          ws.role = 'replay';
+          ws.id = nextId++;
+          replays.add(ws);
+          console.log(`[replay ${ws.id}] connected`);
         } else {
           ws.role = 'viewer';
           ws.id = nextId++;
@@ -307,6 +367,11 @@ wss.on('connection', (ws, req) => {
       case 'event':            // one-off client events (camera started/ended, peer state, errors)
         trace.log('client_event', { role: ws.role, id: ws.id || 0, name: msg.name, data: msg.data || null });
         break;
+      case 'replay_pos':       // the replay board painted a new position: ground truth for the pictures
+        if (ws.role !== 'replay') return;
+        lastReplay = { game: msg.game, gi: msg.gi, ply: msg.ply, fen: msg.fen, san: msg.san, playing: !!msg.playing, t: Date.now() };
+        trace.log('replay', { id: ws.id, game: msg.game, gi: msg.gi, ply: msg.ply, fen: msg.fen, san: msg.san, orient: msg.orient, playing: !!msg.playing, tc: msg.tc });
+        break;
       case 'probe_result':
         trace.log('probe', Object.assign({ role: ws.role, id: ws.id || 0 }, msg.result));
         for (const v of viewers.values()) send(v, { type: 'probe_result', role: ws.role, id: ws.id || 0, result: msg.result });
@@ -320,6 +385,8 @@ wss.on('connection', (ws, req) => {
       broadcaster = null;
       console.log('[broadcaster] disconnected');
       notifyViewers(false);
+    } else if (ws.role === 'replay') {
+      replays.delete(ws);
     } else if (ws.role === 'viewer') {
       viewers.delete(ws.id);
       console.log(`[viewer ${ws.id}] disconnected`);
@@ -360,5 +427,6 @@ server.listen(PORT, '0.0.0.0', () => {
   for (const ip of lanIps()) console.log(`  Viewer LAN : ${scheme}://${ip}:${PORT}/`);
   console.log(`  Broadcast  : ${scheme}://localhost:${PORT}/broadcast   (open on the glasses)`);
   console.log(`  Traces     : ${TRACE_DIR}   (POST /run/start?scenario=... to begin a field run)`);
+  console.log(`  Remote     : ${ACCESS_KEY ? 'tunnelled requests need ?k=<ACCESS_KEY>' : 'off (tunnelled requests are refused; use ./demo.sh)'}; ICE servers: ${ICE_SERVERS.length ? ICE_SERVERS.map((s) => s.urls).join(', ') : 'none (LAN only)'}`);
   if (!useTls) console.log('  (HTTP mode: glasses must reach this as localhost via `adb reverse`, or run `npm run gen-cert` for HTTPS over Wi-Fi)');
 });

@@ -67,14 +67,45 @@
   }
   async function mirrorOffer(sdp) {
     if (mpc) mpc.close();
-    mpc = new RTCPeerConnection({ iceServers: [] });
-    mpc.ontrack = (e) => { video.srcObject = e.streams[0]; if (mimg) mimg.style.display = 'none'; video.style.display = ''; };
+    mpc = new RTCPeerConnection({ iceServers: window.ICE_SERVERS || [] });
+    mpc.ontrack = (e) => {
+      video.srcObject = e.streams[0]; if (mimg) mimg.style.display = 'none'; video.style.display = '';
+      mirrorPlay('ontrack');
+      const pcAt = mpc;
+      setTimeout(() => mirrorReport(pcAt), 5000);
+    };
     mpc.onicecandidate = (e) => send({ type: 'ice', candidate: e.candidate });
     mpc.onconnectionstatechange = () => { if (mpc.connectionState === 'connected') { clearTimeout(mirrorFallback); setStatus('Mirroring the glasses (WebRTC)'); } };
     await mpc.setRemoteDescription(sdp);
     const answer = await mpc.createAnswer();
     await mpc.setLocalDescription(answer);
     send({ type: 'answer', sdp: mpc.localDescription });
+  }
+  // Mobile Safari may refuse to start a video by itself (Low Power Mode, autoplay policy): try, and
+  // if it refuses, show a "tap to start video" note and play on the first tap (a user gesture).
+  function mirrorPlay(why) {
+    const p = video.play();
+    if (!p || !p.then) return;
+    p.then(() => { evt('mirror_play', { ok: true, why: why }); hideTapNote(); })
+     .catch((err) => { evt('mirror_play', { ok: false, why: why, err: err && err.name }); showTapNote(); });
+  }
+  let tapNote = null;
+  function showTapNote() {
+    if (tapNote) return;
+    tapNote = document.createElement('div');
+    tapNote.textContent = 'Tap to start video';
+    tapNote.style.cssText = 'position:fixed;left:0;right:0;top:40%;text-align:center;font-size:28px;color:#000;background:#ffd23c;padding:18px;z-index:9;';
+    document.body.appendChild(tapNote);
+    document.addEventListener('click', function once() { document.removeEventListener('click', once); mirrorPlay('tap'); });
+  }
+  function hideTapNote() { if (tapNote) { tapNote.remove(); tapNote = null; } }
+  async function mirrorReport(pcAt) {
+    const d = { w: video.videoWidth, h: video.videoHeight, paused: video.paused, ready: video.readyState, pc: pcAt ? pcAt.connectionState : null };
+    try {
+      const rep = await pcAt.getStats();
+      rep.forEach((r) => { if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) { d.framesDecoded = r.framesDecoded; d.bytes = r.bytesReceived; d.codec = r.codecId; } });
+    } catch (e) { d.err = String(e); }
+    evt('mirror_video', d);
   }
   function mirrorFrame(buf) {
     if (!mimg) return;
@@ -201,7 +232,7 @@
   async function makeOffer(viewerId) {
     const old = peers.get(viewerId);
     if (old) old.close();
-    const pc = new RTCPeerConnection({ iceServers: [] }); // same LAN: host candidates are enough
+    const pc = new RTCPeerConnection({ iceServers: window.ICE_SERVERS || [] }); // [] = same LAN only; demo.sh adds STUN
     peers.set(viewerId, pc);
     pc.createdAt = Date.now();
     for (const track of stream.getTracks()) pc.addTrack(track, stream);

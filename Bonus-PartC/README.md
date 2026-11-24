@@ -1,10 +1,19 @@
 # Bonus-PartC: performance evaluation in the wild
 
-Everything the system does during a field run is written to `traces/<run>/` by the relay
-(`server.js`); this folder holds the run controller and the scripts that turn those traces
-into the tables and figures for the report.
+Everything the system does during a field run is written to `Bonus-PartC/traces/<run>/` by the
+relay (`server.js`). This folder holds the run controller, the scripts that turn those traces
+into the tables and figures for the report, and the games shown on the replay board.
 
 ```
+Bonus-PartC/
+  run.sh            run controller (talks to the relay)
+  analyze.py        traces -> results/summary.csv, summary.md and figures
+  carve.py          cut a time window out of traces/_idle/ into its own run
+  pgn2json.py       pgn/*.pgn -> pgn/games.json (replay-board playlist); --synth N makes Stockfish games
+  pgn/              ground-truth games: two chess.com bot games + three seeded Stockfish games
+  results/          the analysis of the recorded scenarios (committed)
+  traces/           raw logs, one folder per run (git-ignored, kept locally)
+
 traces/20261015-183622_home-wifi/
   events.jsonl      one JSON object per line: {"t": <relay clock, ms>, "ev": <type>, ...}
   frames/a00017.jpg every picture that went to the vision service (named by analyze req id)
@@ -13,8 +22,8 @@ traces/20261015-183622_home-wifi/
 
 ## Running a field trial
 
-1. Start the three processes as usual (`node server.js`, `.venv/bin/python vision/service.py`,
-   `./glasses.sh` or `GLASSES_IP=... ./glasses.sh`) and open the laptop viewer `http://localhost:3000/`.
+1. Start everything with `./demo.sh --replay` (see the main README). The laptop viewer opens
+   at `http://localhost:3000/` and the replay board in a second window.
 2. Start a run, either in the viewer's **Field run** panel (scenario name + network, *Start run*)
    or from a shell:
    ```sh
@@ -26,24 +35,50 @@ traces/20261015-183622_home-wifi/
    Each run should last 30 s to 5 min; the spec wants 10+ runs per scenario and more than an
    hour in total. Scenario names become the groups in every figure, so keep them consistent
    (`home-wifi`, `pal3-lab`, `5g-hotspot`, `usb`...).
-3. Play against a chess.com bot during the run so the assist KPIs mean something. Afterwards,
-   export the game's PGN from chess.com and save it as `traces/<run>/game.pgn` to score the
-   readings against the real positions (used by Part D).
+3. Point the glasses at the replay board (`./Bonus-PartC/run.sh replay play|pause`), which plays
+   `pgn/games.json` one move every 10 s and logs every position it shows, so each picture is
+   scored against what was really on screen. Alternatively play a chess.com bot and save the
+   game's PGN as `traces/<run>/game.pgn` afterwards.
 4. Analyse:
    ```sh
    .venv/bin/python Bonus-PartC/analyze.py                 # all runs -> Bonus-PartC/results/
-   .venv/bin/python Bonus-PartC/analyze.py traces/*pal3*   # a subset
+   .venv/bin/python Bonus-PartC/analyze.py Bonus-PartC/traces/*_home-home   # a subset
    ```
    Output: `results/summary.csv` (one row per run, every metric), `results/summary.md`
    (pooled per scenario) and `latency_cdf.png`, `throughput.png`, `streaming.png`,
-   `pipeline.png`, `kpi.png`, `part_d.png` (when a PGN is present).
+   `pipeline.png`, `kpi.png`, `part_d.png` (when runs have ground truth: replay board or PGN).
 
 A bandwidth probe (2 MB down + 2 MB up over the same path as the stream) runs automatically on the
 glasses and on the laptop at the start of every run; *Probe bandwidth* / `run.sh probe` repeats it.
 *Pause glasses* / `run.sh pause|resume` stops and restarts streaming and the assist loop on the
 glasses without touching them (Part B runtime control).
 
-Raw traces stay out of git (`traces/` is ignored); keep them, the course may ask for them.
+Raw traces stay out of git (`Bonus-PartC/traces/` is ignored); keep them, the course may ask for them.
+
+## Recorded scenarios (November 2026)
+
+The committed `results/` come from these 35 runs of 85 s (49.6 min), with the HUD on the glasses,
+the laptop viewer, and a phone mirroring the HUD (`/hud?mirror=1`, a second WebRTC stream from the
+glasses) open in every run:
+
+```sh
+.venv/bin/python Bonus-PartC/analyze.py Bonus-PartC/traces/*_5g-eduroam-tunnel \
+    Bonus-PartC/traces/*_home-home Bonus-PartC/traces/*_5g-glasses-home-laptop
+```
+
+| scenario | runs | glasses | laptop | path | board |
+|---|---|---|---|---|---|
+| `5g-eduroam-tunnel` | 10 | phone 5G hotspot | campus Wi-Fi (eduroam) | Cloudflare tunnel + STUN | live chess.com game (no PGN) |
+| `home-home` | 15 | home Wi-Fi | same home Wi-Fi | LAN (`adb reverse` over Wi-Fi) | replay board |
+| `5g-glasses-home-laptop` | 10 | phone 5G hotspot | home Wi-Fi | Cloudflare tunnel + STUN | replay board |
+
+Caveats:
+- **Laptop viewer browser:** Chrome on campus, Safari at home (Chrome blocks LAN WebRTC to the glasses). The campus viewer tab was in the background, so `fps_viewer`/`stalls` are not valid for `5g-eduroam-tunnel`; use the WebRTC `rtc_*` columns.
+- **`5g-eduroam-tunnel`:** run 1 includes phone-mirror reconnects.
+- **`5g-glasses-home-laptop`:** run 6 (`20261124-051242`) is a tracker cold start after a mid-game `/reset`, where the raw reading saw the white king as black; it is not a network effect.
+- **Resolution:** with only one viewer the glasses send 1280×720; with the phone mirror open they drop to 320–640 px wide.
+- **Excluded:** runs whose names end in `-aborted-*` (glasses battery died, viewer stuck in JPEG mode) and the `check-*` setup checks.
+- **`part_d.png` (Part D):** raw vs tracked reading against the replay board, pooled over every scored picture: home-home raw 0.65 / tracked 1.00 (n=351), 5G glasses raw 0.58 / tracked 0.86 (n=214). The 5G tracker figure is pulled down by runs 6–7, the cold start above; without them it is 167/168. The campus scenario has no ground truth (live game, no PGN).
 
 ## What is measured and how
 
@@ -95,10 +130,13 @@ finally used. The glasses report, per picture, when it was taken, sent, answered
 | `client_event` | both | camera_started/ended/error, peer_state, webrtc_fallback, mode, paused/resumed, ws_reconnected |
 | `probe` | both | bytes, down_ms, down_mbps, up_ms, up_mbps |
 | `relay` | relay | every 5 s: glasses RTT/buffer, per-viewer buffer, frames sent/dropped, process memory |
+| `replay` | replay board | game, gi, ply, fen, san, orient, playing, tc (board clock) every time a new position is painted |
 
 ## Ground-truth games
 
-`pgn/` holds the chess.com games played during the runs (exported from the game pages). Copy the
-right one into `traces/<run>/game.pgn` and `analyze.py` scores every frame's raw and tracked reading
+`pgn/` holds the chess.com games played during the runs (exported from the game pages) and the
+synthetic games for the replay board. Copy a real one into `traces/<run>/game.pgn` and `analyze.py` scores every frame's raw and tracked reading
 against the real positions (`pgn_raw_correct`, `pgn_tracked_correct`, figure `part_d.png`).
+Runs on the replay board are scored automatically from the `replay` events (`replay_raw_correct`,
+`replay_tracked_correct`, `replay_move_hit`, `move2pos_med`).
 `game2_2347152640.pgn` was played during run `20261015-205506_parta-wifi-webrtc`.

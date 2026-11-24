@@ -1,15 +1,21 @@
 {
-  "name": "glasses-cam-stream",
+  "name": "chess-glasses",
   "version": "1.0.0",
   "private": true,
-  "description": "Stream the INMO Air2 camera to a web page (WebRTC with JPEG-frame fallback).",
+  "description": "INMO Air2 smart-glasses chess assistant: camera relay (WebRTC + JPEG fallback), OpenCV board reading and Stockfish hints (CS 536 bonus project).",
   "main": "server.js",
   "scripts": {
+    "setup": "./setup.sh",
+    "demo": "./demo.sh",
     "start": "node server.js",
     "gen-cert": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 365 -subj /CN=glasses-cam -addext subjectAltName=IP:$(ipconfig getifaddr en0),DNS:localhost"
   },
   "dependencies": {
     "express": "^4.19.2",
+    "qrcode-terminal": "^0.12.0",
     "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

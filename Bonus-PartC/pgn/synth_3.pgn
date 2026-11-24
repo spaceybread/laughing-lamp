@@ -1,0 +1,9 @@
+[Event "Synthetic replay game"]
+[Site "seed 1003"]
+[Date "????.??.??"]
+[Round "?"]
+[White "Stockfish-synth"]
+[Black "Stockfish-synth"]
+[Result "*"]
+
+1. e4 e5 2. Nc3 Nf6 3. f4 d5 4. exd5 e4 5. Qe2 Be7 6. Nxe4 O-O 7. d3 c6 8. Bd2 cxd5 9. Nxf6+ Bxf6 10. O-O-O Qb6 11. c3 d4 12. c4 Na6 13. g4 g6 14. Nh3 Nc5 15. Be1 Bg7 16. Bg2 Bd7 17. f5 Rfe8 18. Qd2 Ba4 19. Kb1 gxf5 20. Rc1 Re3 21. Bf1 fxg4 22. Rg1 gxh3 23. Be2 Ne6 24. c5 Qd8 25. Rc4 Bc6 26. Bf2 Re5 27. Rxg7+ Kxg7 28. Bg4 Qg5 29. Qxg5+ Nxg5 30. Bxd4 f6 *

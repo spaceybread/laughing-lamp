@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Part C trace analysis: traces/<run>/events.jsonl  ->  results/summary.csv, summary.md and figures.
+"""Part C trace analysis: Bonus-PartC/traces/<run>/events.jsonl  ->  results/summary.csv, summary.md and figures.
 
-    .venv/bin/python Bonus-PartC/analyze.py                 # every run under traces/
-    .venv/bin/python Bonus-PartC/analyze.py traces/2026*_pal3-*   # a subset
-    .venv/bin/python Bonus-PartC/analyze.py --pgn game.pgn traces/<run>   # score readings against the real game
+    .venv/bin/python Bonus-PartC/analyze.py                 # every run under Bonus-PartC/traces/
+    .venv/bin/python Bonus-PartC/analyze.py Bonus-PartC/traces/2026*_pal3-*   # a subset
+    .venv/bin/python Bonus-PartC/analyze.py --pgn game.pgn Bonus-PartC/traces/<run>   # score readings against the real game
 
 A run directory may also contain game.pgn (the chess.com export of the game played during the run);
 it is used automatically to score the raw and the tracked readings against the true positions (Part D).
@@ -17,6 +17,7 @@ Metrics per run (pooled per scenario in the figures):
             clock), time since last good read (s), tracker losses, raw-reading vs tracked-position agreement
 """
 import argparse
+import bisect
 import collections
 import csv
 import glob
@@ -164,10 +165,65 @@ def summarize(run_dir, pgn=None):
         placement = lambda fen: fen.split()[0]
         r["pgn_tracked_correct"] = mean([placement(e["fen"]) in truth for e in with_fen]) if with_fen else math.nan
         r["pgn_raw_correct"] = mean([placement(e["raw"]["fen"]) in truth for e in with_fen if e.get("raw")]) if with_fen else math.nan
+        series["pgn_tracked_hits"] = [placement(e["fen"]) in truth for e in with_fen]
+        series["pgn_raw_hits"] = [placement(e["raw"]["fen"]) in truth for e in with_fen if e.get("raw")]
 
     # ---- glasses-side stats ------------------------------------------------------------------
     gs = [e["s"] for e in by["stats"] if e["role"] == "broadcaster"]
     assist = [a for s in gs for a in (s.get("assist") or [])]
+
+    # ---- replay board ground truth (public/replay.html) ---------------------------------------
+    # `replay` events say which position the laptop screen showed from when (relay clock). A picture's
+    # capture time (glasses clock) minus the glasses' clock offset gives the position it photographed.
+    # Pictures within REPLAY_GUARD_MS of a change are skipped (the frame may show either position).
+    REPLAY_GUARD_MS = 750
+    changes = []
+    if start.get("replay") and start["replay"].get("fen"):
+        changes.append((start["replay"]["t"], start["replay"]["fen"].split()[0]))
+    for e in by["replay"]:
+        if not changes or changes[-1][1] != e["fen"].split()[0]:
+            changes.append((e["t"], e["fen"].split()[0]))
+    if changes and off_g is not None:
+        times = [c[0] for c in changes]
+        shown_at = {a.get("req"): a["t_shown"] - off_g for a in assist if a.get("t_shown") and a.get("req") is not None}
+        def truth_at(t):
+            i = bisect.bisect_right(times, t) - 1
+            if i < 0:
+                return None, None
+            prev_gap = t - times[i]
+            next_gap = times[i + 1] - t if i + 1 < len(times) else float("inf")
+            return (changes[i][1] if min(prev_gap, next_gap) >= REPLAY_GUARD_MS else None), i
+        place = lambda fen: fen.split()[0] if fen else None
+        scored = []                                   # (event, truth placement, change index)
+        for e in an:
+            if not e.get("cap"):
+                continue
+            tr, idx = truth_at(e["cap"] - off_g)
+            if tr is not None:
+                scored.append((e, tr, idx))
+        with_fen = [(e, tr) for e, tr, _ in scored if e.get("fen")]
+        with_raw = [(e, tr) for e, tr, _ in scored if e.get("raw") and e["raw"].get("fen")]
+        # move -> correct position on the glasses: first picture of the new position whose final reading
+        # matches, from the change to when the glasses drew that result (relay clock)
+        lags, hit = [], 0
+        for k in range(len(changes)):
+            if changes[k][0] < t0:
+                continue
+            cand = [e for e, tr, idx in scored if idx == k and place(e.get("fen")) == changes[k][1]]
+            if cand:
+                hit += 1
+                e = min(cand, key=lambda x: x["cap"])
+                lags.append((shown_at.get(e["req"], e["t"]) - changes[k][0]))
+        n_moves = sum(1 for c in changes if c[0] >= t0)
+        r.update(replay_scored=len(scored), replay_moves=n_moves,
+                 replay_correct=mean([place(e.get("fen")) == tr for e, tr, _ in scored]) if scored else math.nan,
+                 replay_tracked_correct=mean([place(e["fen"]) == tr for e, tr in with_fen]) if with_fen else math.nan,
+                 replay_raw_correct=mean([place(e["raw"]["fen"]) == tr for e, tr in with_raw]) if with_raw else math.nan,
+                 replay_move_hit=hit / n_moves if n_moves else math.nan,
+                 move2pos_med=med(lags), move2pos_p95=pct(lags, 95))
+        series["move2pos"] = lags
+        series["replay_tracked_hits"] = [place(e["fen"]) == tr for e, tr in with_fen]   # per picture, for part_d.png
+        series["replay_raw_hits"] = [place(e["raw"]["fen"]) == tr for e, tr in with_raw]
     cap2hint = [a["t_shown"] - a["cap"] for a in assist if a.get("t_shown") and a.get("ok")]
     cap2resp = [a["t_resp"] - a["cap"] for a in assist if a.get("t_resp")]
     enc = [a["t_send"] - a["cap"] for a in assist if a.get("t_send")]
@@ -263,7 +319,9 @@ COLUMNS = ["run", "scenario", "net", "duration_s", "uplink_mbps", "downlink_mbps
            "analyses", "analyses_per_min", "detect_rate", "readable_rate", "hint_rate", "tracker_lost", "engine_cached_rate",
            "cap2hint_med", "cap2hint_p95", "cap2resp_med", "encode_ms", "analyze_total_med", "analyze_total_p95",
            "encode_ms", "transfer_ms", "detect_ms", "classify_ms", "match_ms", "engine_ms", "engine_runs", "last_ok_age_med", "last_ok_age_p95", "last_ok_age_max",
-           "raw_valid_rate", "raw_exact_rate", "raw_wrong_squares_mean", "pgn_raw_correct", "pgn_tracked_correct", "battery_drop", "states"]
+           "raw_valid_rate", "raw_exact_rate", "raw_wrong_squares_mean", "pgn_raw_correct", "pgn_tracked_correct",
+           "replay_scored", "replay_moves", "replay_correct", "replay_raw_correct", "replay_tracked_correct", "replay_move_hit", "move2pos_med", "move2pos_p95",
+           "battery_drop", "states"]
 
 
 def fmt(v):
@@ -286,7 +344,8 @@ def write_tables(rows, out_dir):
     sums = {"duration_s", "stalls", "failures", "analyses", "tracker_lost", "glasses_disconnects", "rtc_freezes"}
     cols = ["scenario", "runs", "duration_s", "uplink_mbps", "downlink_mbps", "ws_rtt_med", "ws_rtt_p95", "rtc_rtt_med", "lat_glasses_relay_med",
             "lat_glasses_laptop_med", "fps_viewer", "stalls", "stall_pct", "jitter_viewer_ms", "rtc_jitter_ms", "rtc_loss_down", "failures",
-            "analyses", "detect_rate", "readable_rate", "hint_rate", "cap2hint_med", "encode_ms", "last_ok_age_med", "tracker_lost", "raw_exact_rate", "pgn_raw_correct", "pgn_tracked_correct"]
+            "analyses", "detect_rate", "readable_rate", "hint_rate", "cap2hint_med", "encode_ms", "last_ok_age_med", "tracker_lost", "raw_exact_rate", "pgn_raw_correct", "pgn_tracked_correct",
+            "replay_correct", "replay_raw_correct", "replay_tracked_correct", "replay_move_hit", "move2pos_med"]
     lines = ["# Part C summary", "", f"{len(rows)} runs, {sum(r['duration_s'] for r in rows) / 60:.1f} min in total.", "",
              "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for sc, rs in sorted(groups.items()):
@@ -380,29 +439,43 @@ def write_figures(rows, series, out_dir):
         cdf(axes[1], pooled[sc]["ages"], sc)
     axes[1].set_title("time since last good read (s)", fontsize=10); axes[1].set_ylabel("CDF"); axes[1].grid(alpha=.3); legend(axes[1])
     save(fig, "kpi.png")
-    if any("pgn_raw_correct" in r for r in rows):
-        fig, ax = plt.subplots(figsize=(6, 3.8))
-        rs = [r for r in rows if "pgn_raw_correct" in r]
-        x = np.arange(len(rs))
-        ax.bar(x - 0.2, [r["pgn_raw_correct"] for r in rs], 0.4, label="raw reading (no tracking)")
-        ax.bar(x + 0.2, [r["pgn_tracked_correct"] for r in rs], 0.4, label="tracked position")
-        ax.set_xticks(x); ax.set_xticklabels([r["scenario"] for r in rs], fontsize=8, rotation=30, ha="right"); ax.set_ylim(0, 1.05)
-        ax.set_ylabel("fraction of pictures matching the real game"); ax.set_title("Part D: tracker vs raw reader (PGN ground truth)", fontsize=10); ax.legend(fontsize=8); ax.grid(alpha=.3, axis="y")
+    # 5. Part D: raw reading vs tracked position, against ground truth, pooled over every scored picture
+    #    of a scenario (replay board: the position on screen when the picture was taken; PGN: any
+    #    position of the real game). Bars are labelled with the number of pictures behind them.
+    groups = []
+    for kind, label in (("replay", "replay board"), ("pgn", "PGN")):
+        for sc in scen:
+            raw = [h for r, s in zip(rows, series) if r["scenario"] == sc for h in s.get(kind + "_raw_hits", [])]
+            trk = [h for r, s in zip(rows, series) if r["scenario"] == sc for h in s.get(kind + "_tracked_hits", [])]
+            if raw or trk:
+                groups.append((f"{sc}\n({label})", raw, trk))
+    if groups:
+        fig, ax = plt.subplots(figsize=(1.9 * len(groups) + 2.5, 3.8))
+        x = np.arange(len(groups))
+        for off, idx, name in ((-0.2, 1, "raw reading (no tracking)"), (0.2, 2, "tracked position")):
+            vals = [mean(g[idx]) if g[idx] else 0 for g in groups]
+            bars = ax.bar(x + off, vals, 0.4, label=name)
+            for b, g in zip(bars, groups):
+                ax.annotate(f"{b.get_height():.2f}\nn={len(g[idx])}", (b.get_x() + b.get_width() / 2, b.get_height()),
+                            ha="center", va="bottom", fontsize=7, xytext=(0, 2), textcoords="offset points")
+        ax.set_xticks(x); ax.set_xticklabels([g[0] for g in groups], fontsize=8); ax.set_ylim(0, 1.18)
+        ax.set_ylabel("fraction of pictures correct"); ax.set_title("Part D: game tracker vs raw reader (ground truth)", fontsize=10)
+        ax.legend(fontsize=8, loc="lower right"); ax.grid(alpha=.3, axis="y")
         save(fig, "part_d.png")
     return saved
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("runs", nargs="*", help="run directories (default: traces/* except _idle)")
+    ap.add_argument("runs", nargs="*", help="run directories (default: Bonus-PartC/traces/* except _idle)")
     ap.add_argument("--pgn", help="PGN of the game played, applied to every given run")
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--no-figures", action="store_true")
     args = ap.parse_args()
-    runs = args.runs or sorted(d for d in glob.glob(os.path.join(ROOT, "traces", "*")) if os.path.isdir(d) and not os.path.basename(d).startswith("_"))
+    runs = args.runs or sorted(d for d in glob.glob(os.path.join(HERE, "traces", "*")) if os.path.isdir(d) and not os.path.basename(d).startswith("_"))
     runs = [d for d in runs if os.path.exists(os.path.join(d, "events.jsonl"))]
     if not runs:
-        sys.exit("no runs found (traces/<run>/events.jsonl)")
+        sys.exit("no runs found (Bonus-PartC/traces/<run>/events.jsonl)")
     rows, series = [], []
     for d in runs:
         try:

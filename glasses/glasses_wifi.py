@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Join the INMO Air2 (or any Android 9-ish device) to a Wi-Fi network over USB ADB, no typing on the glasses.
 
-    ./glasses_wifi.py "My Network"                 # prompts for the password (not echoed, not in shell history)
-    ./glasses_wifi.py "My Network" --adb-wifi      # ...then switch ADB to Wi-Fi and print GLASSES_IP
-    ./glasses_wifi.py "My Network" -p secret       # password on the command line (visible in history)
+    glasses/glasses_wifi.py "My Network"                 # prompts for the password if needed (not echoed, not in history)
+    glasses/glasses_wifi.py "My Network" --adb-wifi      # ...then switch ADB to Wi-Fi and print GLASSES_IP
+    glasses/glasses_wifi.py "My Network" -p secret       # password on the command line (visible in history)
 
 How: opens the stock Wi-Fi settings screen, reads the UI hierarchy with `uiautomator dump`, taps the
 network by name (or "Add network" if it isn't listed), types the password into the password field,
@@ -195,17 +195,35 @@ def join(ssid, password, timeout=40):
                 raise RuntimeError("Add network: could not pick WPA/WPA2 security")
             tap(opt)
 
-    # 2) password field (absent if the network is already saved), then CONNECT / SAVE
+    # 2) a saved network in range connects straight away when tapped (no dialog at all); otherwise a
+    #    dialog: password field (absent if the network is saved but out of range), then CONNECT / SAVE
+    time.sleep(1.5)
+    s, _, _ = current_connection()
+    if s and s.lower() == ssid.lower():
+        print("network already saved on the glasses; it is connecting")
+        return wait_connected(ssid, timeout)
     root = ui_dump()
     saved_dialog = bool(nodes(root, text="FORGET")) and not nodes(root, **{"class": "android.widget.EditText"})
     if saved_dialog:
         print("network already saved on the glasses; connecting without a password")
     else:
+        if password is None:
+            password = getpass.getpass(f"Password for '{ssid}': ")
         pw = find_password_field()
         if pw is None:
             raise RuntimeError("could not find the password field in the dialog")
         print("typing the password")
-        tap(pw); type_text(password)
+        tap(pw); time.sleep(1.0)              # typed straight after the tap, the first character gets lost
+        type_text(password)
+        # the field shows one dot per character: check nothing was dropped, retype once if it was
+        for attempt in range(2):
+            got = [n for n in nodes(ui_dump(), **{"class": "android.widget.EditText"}) if n.get("password") == "true"]
+            if not got or len(got[0].get("text", "")) == len(password):
+                break
+            print(f"password field has {len(got[0].get('text', ''))} characters, expected {len(password)}; retyping")
+            tap(got[0]); time.sleep(1.0)
+            shell("input keyevent 123 " + " ".join(["67"] * (len(password) + 10)), check=False)   # MOVE_END + DELs
+            time.sleep(0.8); type_text(password)
     btn = None
     for _ in range(3):
         root = ui_dump()
@@ -218,8 +236,11 @@ def join(ssid, password, timeout=40):
     if btn.get("enabled") == "false":
         raise RuntimeError("the CONNECT/SAVE button stayed disabled (password too short?)")
     tap(btn)
+    return wait_connected(ssid, timeout)
 
-    # 3) wait for an address
+
+def wait_connected(ssid, timeout):
+    """3) wait for an address on the wanted network"""
     print("waiting for the connection", end="", flush=True)
     end = time.time() + timeout
     while time.time() < end:
@@ -240,7 +261,7 @@ def main():
     ap.add_argument("--adb-wifi", action="store_true", help="afterwards switch ADB to TCP (adb tcpip 5555) and connect over Wi-Fi")
     ap.add_argument("--timeout", type=int, default=40)
     a = ap.parse_args()
-    password = a.password if a.password is not None else getpass.getpass(f"Password for '{a.ssid}': ")
+    password = a.password                     # asked for only if the glasses don't know the network yet
     serial = pick_usb_device(a.serial)
     print(f"device {serial}")
     s, st, ip = current_connection()
